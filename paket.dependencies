@@ -1,0 +1,14 @@
+group DLQService
+    
+    source https://api.nuget.org/v3/index.json
+    storage: none
+    framework: net10.0
+
+    nuget FSharp.Core
+    nuget IcedTasks
+    nuget Microsoft.Extensions.Hosting
+    nuget Microsoft.Extensions.Logging
+    nuget NATS.Net
+    nuget NLog
+    nuget NLog.Extensions.Logging
+    nuget Microsoft.Extensions.Configuration.Abstractions

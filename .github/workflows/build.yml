@@ -1,0 +1,139 @@
+name: build-dlq-service
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/DLQService/*.fsproj
+      - src/DLQService/*.fs
+      - src/DLQService/Dockerfile
+      - src/DLQService/paket.references
+      - paket.lock
+      - paket.dependencies
+      - global.json
+      - .github/workflows/build.yml
+  workflow_dispatch:
+
+# permissions are needed if pushing to ghcr.io
+permissions: 
+  packages: write
+  contents: write
+
+jobs:
+  build-dlq-service:
+
+    name: Build DLQ Service
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        dotnet-version: [ '10.0.x' ]
+        dotnet-sdk-version: [ 'net10.0' ]
+    
+    permissions:
+      contents: write 
+      packages: write
+      
+    steps:
+    - 
+      name: Checkout
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    - 
+      name: Setup dotnet
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ matrix.dotnet-version }}
+    -
+      name: Put project file and output path into environment variable.
+      id: set_env
+      run: |
+        echo "project_path=./src/DLQService/DLQService.fsproj" >> $GITHUB_OUTPUT
+        echo "output_path=./src/DLQService/deploy" >> $GITHUB_OUTPUT
+    -
+      name: Read Version
+      id: version
+      run: |
+        if [ -f ./src/DLQService/VERSION ]; then
+          VER=$(cat ./src/DLQService/VERSION | awk -F. -v OFS=. '{$NF += 1 ; print}')
+        else
+          VER="0.0.1"
+        fi
+        echo $VER > ./src/DLQService/VERSION
+        echo "build_version=$VER" >> $GITHUB_OUTPUT
+    - 
+      name: Install paket as a global tool and add dotnet tools global path to PATH
+      run: |
+        dotnet tool install -g paket
+        echo "${HOME}/.dotnet/tools" >> $GITHUB_PATH
+    -
+      name: Install nuget packages with paket.
+      run: paket install
+    - 
+      name: Build project in release mode
+      run: |
+        dotnet tool restore
+        dotnet restore ${{ steps.set_env.outputs.project_path }}
+        dotnet build --configuration Release ${{ steps.set_env.outputs.project_path }}
+    -
+      # we need qemu and buildx so we can build multiple platforms later
+      name: Set up QEMU
+      id: qemu
+      uses: docker/setup-qemu-action@v3
+    -
+      # BuildKit (used with `docker buildx`) is the best way to build images
+      name: Set up Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v3
+    -
+      name: Login to GHCR
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - 
+      name: BuildAndPush
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        builder: ${{ steps.buildx.outputs.name }}
+        file: ./src/DLQService/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: |
+          ghcr.io/${{ github.repository_owner }}/dlqservice:${{ steps.version.outputs.build_version }}
+          ghcr.io/${{ github.repository_owner }}/dlqservice:latest
+          ghcr.io/${{ github.repository_owner }}/dlqservice:${{ github.sha }}
+        labels: |
+          org.opencontainers.image.title=DLQ Service
+          org.opencontainers.image.description=Dead Letter Queue service for Mercator
+          org.opencontainers.image.version=${{ steps.version.outputs.build_version }}
+          org.opencontainers.image.revision=${{ github.sha }}
+          org.opencontainers.image.source=${{ github.repositoryUrl }}
+          org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/src/DLQService
+        cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache,mode=max
+    - 
+        name: Commit and tag new version and create release
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env: 
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |        
+            t_tag='dlq-service-v${{ steps.version.outputs.build_version }}'
+            git config user.name github-actions
+            git config user.email github-actions@github.com
+            git pull
+            git add './src/DLQService/VERSION'
+            git commit -m 'Update version for DLQ Service to ${{ steps.version.outputs.build_version }}'
+            git push origin main
+            git tag -a "$t_tag" -m "Released new version of DLQ Service."
+            git push origin "$t_tag"
+            gh release create 'dlq-service-${{ steps.version.outputs.build_version }}' \
+                -t 'DLQ Service ${{ steps.version.outputs.build_version }}' \
+                --generate-notes
+

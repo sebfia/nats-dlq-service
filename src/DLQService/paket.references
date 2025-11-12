@@ -1,0 +1,9 @@
+group DLQService
+FSharp.Core
+IcedTasks
+NLog
+NLog.Extensions.Logging
+Microsoft.Extensions.Logging
+Microsoft.Extensions.Hosting
+NATS.Net
+Microsoft.Extensions.Configuration.Abstractions
