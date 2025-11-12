@@ -20,7 +20,7 @@ RUN dotnet paket restore
 # Now copy source code (this layer will be invalidated on source changes)
 COPY src ./src
 
-WORKDIR /src/DLQService
+WORKDIR /src/src/DLQService
 
 RUN dotnet publish DLQService.fsproj \
     -c Release \
