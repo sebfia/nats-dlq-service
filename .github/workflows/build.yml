@@ -65,17 +65,16 @@ jobs:
         echo $VER > ./src/DLQService/VERSION
         echo "build_version=$VER" >> $GITHUB_OUTPUT
     - 
-      name: Install paket as a global tool and add dotnet tools global path to PATH
+      name: Restore dotnet tools (Paket)
       run: |
-        dotnet tool install -g paket
+        dotnet tool restore
         echo "${HOME}/.dotnet/tools" >> $GITHUB_PATH
     -
       name: Install nuget packages with paket.
-      run: paket install
+      run: dotnet paket install
     - 
       name: Build project in release mode
       run: |
-        dotnet tool restore
         dotnet restore ${{ steps.set_env.outputs.project_path }}
         dotnet build --configuration Release ${{ steps.set_env.outputs.project_path }}
     -
