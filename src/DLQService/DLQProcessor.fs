@@ -162,8 +162,8 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                     
                     logger.LogInformation "✅ DLQ stream created or updated successfully."
                     
-                    // Inline function to process advisory events and publish to DLQ
-                    let inline processAdvisoryEvent (msg: NATS.Client.Core.NatsMsg<ReadOnlyMemory<byte>>) (failureReason: string) (logPrefix: string) (successLogFormat: string) = cancellableTask {
+                    // Function to process advisory events and publish to DLQ
+                    let processAdvisoryEvent (msg: NATS.Client.Core.NatsMsg<ReadOnlyMemory<byte>>) (failureReason: string) (logPrefix: string) (successLogFormat: string) = cancellableTask {
                         // Parse advisory event JSON
                         let jsonText = System.Text.Encoding.UTF8.GetString(msg.Data.Span)
                         use doc = JsonDocument.Parse(jsonText)
