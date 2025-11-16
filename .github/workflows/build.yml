@@ -29,7 +29,7 @@ jobs:
 
     strategy:
       matrix:
-        dotnet-version: [ '10.0.x' ]
+        dotnet-version: [ '8.0.x' ]
         dotnet-sdk-version: [ 'net10.0' ]
     
     permissions:
@@ -42,9 +42,24 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
+    # Force cold restore to fix F# compiler state machine errors (FS0073, FS3511)
+    # This step clears all runner-side caches to ensure fresh package/tool restores
+    # Reference: https://github.com/sebfia/nats-dlq-service/actions/runs/19405431583/job/55519358311
+    # TODO: Once builds are stable, consider removing or adjusting cache clearing strategy
+    - 
+      name: Ensure clean runner caches and force cold restore
+      run: |
+        set -eux
+        dotnet --info || echo "dotnet not yet available"
+        # Clear all NuGet/dotnet caches
+        dotnet nuget locals all --clear || true
+        # Remove cached directories
+        rm -rf ~/.nuget/packages ~/.local/share/NuGet/v3-cache ~/.dotnet/tools ~/.paket .paket/paket-files paket-files || true
+        # Clear paket cache if paket is available
+        if command -v paket >/dev/null 2>&1; then paket clear-cache || true; fi
     - 
       name: Setup dotnet
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@v3
       with:
         dotnet-version: ${{ matrix.dotnet-version }}
     -
@@ -85,7 +100,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.dotnet/tools
-        key: dotnet-tools-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        key: dotnet-tools-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock', '.config/dotnet-tools.json') }}-v2
         restore-keys: |
           dotnet-tools-${{ runner.os }}-
     - 
@@ -100,19 +115,22 @@ jobs:
         path: |
           .paket
           paket-files
-        key: paket-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        key: paket-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock') }}-v2
         restore-keys: |
           paket-${{ runner.os }}-
     -
       name: Install nuget packages with paket.
       run: dotnet paket install
+    -
+      name: Restore with no-cache to ensure fresh packages
+      run: dotnet restore --no-cache || true
     - 
       name: Cache .NET restore
       uses: actions/cache@v4
       with:
         path: |
           ~/.nuget/packages
-        key: dotnet-restore-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        key: dotnet-restore-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock') }}-v2
         restore-keys: |
           dotnet-restore-${{ runner.os }}-
     - 
