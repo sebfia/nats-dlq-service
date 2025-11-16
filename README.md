@@ -19,11 +19,11 @@ The DLQService automatically listens for two types of failed messages from servi
    - NATS automatically publishes these advisory events when messages exceed max deliveries
    - **No action required from services** - the DLQService handles everything automatically
 
-**Message filtering**: The service validates that advisory events match the configured namespace and environment by checking the stream name (format: `{NAMESPACE}_{ENV}_*`) before processing. This ensures that:
+**Message filtering**: The service validates that messages match the configured namespace and environment by checking the **original message subject** (format: `{namespace}.{env}.>`) before processing. This ensures that:
 
-- Each DLQService instance only handles messages from services within its designated namespace/environment
+- Each DLQService instance only handles messages from subjects within its designated namespace/environment
 
-- Advisory events from streams in other namespaces or environments are safely ignored
+- Advisory events for messages with subjects outside the configured pattern are safely ignored
 
 - Cross-environment and cross-namespace contamination is prevented
 
@@ -117,8 +117,10 @@ Logs in Development are human-readable; in Production, they are JSON-formatted.
 When a service calls `AckTerminateAsync()` on a message, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>`. The DLQService automatically:
 
 - Receives the advisory event
-- Validates it matches the configured namespace/environment (by checking the stream name)
-- Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
+- Fetches the original message from the stream
+- Validates the original message subject matches the configured namespace/environment pattern (e.g., `mercator.dev.>`)
+- If it matches, republishes the message to the DLQ with DLQ metadata headers
+- If it doesn't match, skips the message and logs it
 
 **Example** (F# - no DLQ code needed):
 
@@ -132,8 +134,10 @@ do! msg.AckTerminateAsync()
 When a message exceeds the consumer's `MaxDeliver` threshold, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`. The DLQService automatically:
 
 - Receives the advisory event
-- Validates it matches the configured namespace/environment (by checking the stream name)
-- Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
+- Fetches the original message from the stream
+- Validates the original message subject matches the configured namespace/environment pattern (e.g., `mercator.dev.>`)
+- If it matches, republishes the message to the DLQ with DLQ metadata headers
+- If it doesn't match, skips the message and logs it
 
 **Example** (F# consumer configuration - no DLQ configuration needed):
 
@@ -149,9 +153,9 @@ let consumerConfig = ConsumerConfig(
 
 **Important**:
 
-- The DLQService filters advisory events by stream name (format: `{NAMESPACE}_{ENV}_*`)
-- If the DLQService is configured with `Namespace: "Mercator"` and `Environment: "development"`, it will only process advisory events for streams starting with `MERCATOR_DEV_`
-- Advisory events from streams like `OTHERNAMESPACE_DEV_*` or `MERCATOR_STAGING_*` will be logged as debug messages and skipped.
+- The DLQService filters messages by checking the **original message subject** against the pattern `{namespace}.{env}.>` (e.g., `mercator.dev.>`)
+- If the DLQService is configured with `Namespace: "Mercator"` and `Environment: "development"`, it will only process messages with subjects starting with `mercator.dev.`
+- Messages with subjects like `othernamespace.dev.*` or `mercator.staging.*` will be logged and skipped
 
 ## Operational notes
 
@@ -159,25 +163,25 @@ let consumerConfig = ConsumerConfig(
 - Messages are appended under subjects reflecting the original stream and consumer, making filtering and reprocessing straightforward.
 - **Terminated messages**: NATS automatically publishes advisory events when services call `AckTerminateAsync()`. No action required from services.
 - **Undeliverable messages**: NATS automatically publishes advisory events when messages exceed `MaxDeliver`. No action required from services.
-- **Payload handling**: When an advisory event is received, the service fetches the original message from the stream and republishes the exact payload into the DLQ stream alongside the metadata.
-- The service only processes advisory events for streams that match its configured namespace and environment, preventing cross-contamination.
+- **Payload handling**: When an advisory event is received, the service fetches the original message from the stream, validates its subject matches the configured namespace/environment pattern, and if valid, republishes the exact payload into the DLQ stream alongside the metadata.
+- The service only processes messages whose subjects match the configured namespace and environment pattern (`{namespace}.{env}.>`), preventing cross-contamination.
 
 ## Troubleshooting
 
 - No DLQ entries appear:
   - **For terminated messages**: Verify that services are actually calling `AckTerminateAsync()` on messages. NATS will automatically publish advisory events.
   - **For undeliverable messages**: Verify that consumers have `MaxDeliver` configured and messages are actually exceeding this threshold. NATS will automatically publish advisory events.
-  - **Check that stream names match the DLQService configuration** - advisory events for streams that don't start with `{NAMESPACE}_{ENV}_` are logged as debug messages and skipped.
+  - **Check that message subjects match the DLQService configuration** - messages with subjects that don't start with `{namespace}.{env}.` are logged and skipped.
   - Confirm `NatsUrl` and connectivity to your NATS server.
   - Check logs; in Production they are JSON on stdout.
-  - Look for debug messages like "Skipping terminated advisory event - stream doesn't match namespace/environment" which indicate filtering is working but streams don't match.
+  - Look for error messages like "Skipping message from subject '...' (does not match namespace pattern '...')" which indicate filtering is working but subjects don't match.
   - Verify that NATS JetStream advisory events are enabled (they are enabled by default).
 - Confirm the stream exists and subjects are bound:
   - Stream: `{NAMESPACE}_{ENV}_DLQ`
   - Subjects: `{namespace}.{env}.dlq.>`
 - Advisory events are received but no DLQ entries appear:
-  - Check that the stream name in the advisory event matches the namespace/environment pattern (`{NAMESPACE}_{ENV}_*`).
-  - Verify the advisory event JSON contains the expected fields: `stream`, `consumer`, `subject`, `delivered`.
+  - Check that the original message subject matches the namespace/environment pattern (`{namespace}.{env}.>`).
+  - Verify the advisory event JSON contains the expected fields: `stream`, `consumer_seq`, `stream_seq`, `deliveries`.
 
 ## Build
 
