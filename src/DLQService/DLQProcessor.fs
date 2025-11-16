@@ -76,7 +76,7 @@ module TerminatedAdvisory =
                 | false, _ -> None
         }
 
-    let inline handleMessage (js: INatsJSContext) (dlqSubject: string) (advisory: TerminatedAdvisory) = cancellableTask {
+    let inline handleMessage (js: INatsJSContext) (dlqSubject: string) (expectedSubjectPrefix: string) (advisory: TerminatedAdvisory) = cancellableTask {
         try
             let! ct = CancellableTask.getCancellationToken()
             // Fetch original message from stream
@@ -88,38 +88,43 @@ module TerminatedAdvisory =
             match originalMsg with
             | originalMsg when originalMsg.Message = null -> 
                 return Error (sprintf "Original message not found in stream %s at sequence %d" advisory.Stream advisory.StreamSeq)
-            | originalMsg -> 
-                let headers = NatsHeaders()
-                headers.Add("X-DLQ-Original-Stream", advisory.Stream)
-                headers.Add("X-DLQ-Original-Subject", originalMsg.Message.Subject)
-                headers.Add("X-DLQ-Original-Time", originalMsg.Message.Time.ToString("O"))
-                headers.Add("X-DLQ-Original-Seq", string advisory.StreamSeq)
-                headers.Add("X-DLQ-Consumer", advisory.Consumer)
-                headers.Add("X-DLQ-Deliveries", string advisory.Deliveries)
-                advisory.Reason 
-                |> Option.iter (fun r -> headers.Add("X-DLQ-Termination-Reason", r))
-                
-                // Copy original message headers - decode from base64 Hdrs field
-                // NATS stores headers in base64-encoded format, we decode and parse them
-                if originalMsg.Message <> null && not (String.IsNullOrEmpty(originalMsg.Message.Hdrs)) then
-                    let hdrsBytes = Convert.FromBase64String(originalMsg.Message.Hdrs)
-                    let hdrsText = System.Text.Encoding.UTF8.GetString(hdrsBytes)
-                    // Parse NATS header format: each line is "Key: Value"
-                    // Skip first line (NATS/1.0) and parse remaining headers
-                    let headerLines = hdrsText.Split([|'\r'; '\n'|], StringSplitOptions.RemoveEmptyEntries)
-                    headerLines
-                    |> Array.skip 1 // Skip "NATS/1.0" line
-                    |> Array.iter (fun line ->
-                        match line.IndexOf(':') with
-                        | -1 -> ()
-                        | colonIdx ->
-                            let key = line.Substring(0, colonIdx).Trim()
-                            let value = line.Substring(colonIdx + 1).Trim()
-                            headers.Add($"X-DLQ-{key}", value))
-                
-                // Publish to DLQ with the headers we've built
-                let! ack = js.PublishAsync(dlqSubject, originalMsg.Message.Data, headers = headers, cancellationToken = ct)
-                return Ok ack
+            | originalMsg ->
+                // Filter: only process messages from the configured namespace.env pattern
+                match originalMsg.Message.Subject.StartsWith(expectedSubjectPrefix, StringComparison.OrdinalIgnoreCase) with
+                | false ->
+                    return Error (sprintf "Skipping message from subject '%s' (does not match namespace pattern '%s')" originalMsg.Message.Subject expectedSubjectPrefix)
+                | true ->
+                    let headers = NatsHeaders()
+                    headers.Add("X-DLQ-Original-Stream", advisory.Stream)
+                    headers.Add("X-DLQ-Original-Subject", originalMsg.Message.Subject)
+                    headers.Add("X-DLQ-Original-Time", originalMsg.Message.Time.ToString("O"))
+                    headers.Add("X-DLQ-Original-Seq", string advisory.StreamSeq)
+                    headers.Add("X-DLQ-Consumer", advisory.Consumer)
+                    headers.Add("X-DLQ-Deliveries", string advisory.Deliveries)
+                    advisory.Reason 
+                    |> Option.iter (fun r -> headers.Add("X-DLQ-Termination-Reason", r))
+                    
+                    // Copy original message headers - decode from base64 Hdrs field
+                    // NATS stores headers in base64-encoded format, we decode and parse them
+                    if originalMsg.Message <> null && not (String.IsNullOrEmpty(originalMsg.Message.Hdrs)) then
+                        let hdrsBytes = Convert.FromBase64String(originalMsg.Message.Hdrs)
+                        let hdrsText = System.Text.Encoding.UTF8.GetString(hdrsBytes)
+                        // Parse NATS header format: each line is "Key: Value"
+                        // Skip first line (NATS/1.0) and parse remaining headers
+                        let headerLines = hdrsText.Split([|'\r'; '\n'|], StringSplitOptions.RemoveEmptyEntries)
+                        headerLines
+                        |> Array.skip 1 // Skip "NATS/1.0" line
+                        |> Array.iter (fun line ->
+                            match line.IndexOf(':') with
+                            | -1 -> ()
+                            | colonIdx ->
+                                let key = line.Substring(0, colonIdx).Trim()
+                                let value = line.Substring(colonIdx + 1).Trim()
+                                headers.Add($"X-DLQ-{key}", value))
+                    
+                    // Publish to DLQ with the headers we've built
+                    let! ack = js.PublishAsync(dlqSubject, originalMsg.Message.Data, headers = headers, cancellationToken = ct)
+                    return Ok ack
         with ex ->
             return Error (sprintf "Failed to handle terminated message: %s" ex.Message)
     }
@@ -232,6 +237,9 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                     
                     let subjectFor' ta = subjectFor ns env ta
                     
+                    // Build the expected subject prefix once for filtering
+                    let expectedSubjectPrefix = $"{ns.ToLowerInvariant()}.{env.ToLowerInvariant()}."
+                    
                     // Process terminated message advisory events
                     let processTerminatedAdvisoryEvents = 
                         let p =
@@ -247,7 +255,7 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                                     try
                                         let advisory = TerminatedAdvisory.parse msg.Data
                                         let subject = subjectFor' advisory
-                                        let! response = TerminatedAdvisory.handleMessage jsCtx subject advisory ct
+                                        let! response = TerminatedAdvisory.handleMessage jsCtx subject expectedSubjectPrefix advisory ct
                                         match response with
                                         | Ok ack when ack.Error <> null ->
                                             logger.LogInformation($"Processed terminated advisory message for stream '{advisory.Stream}' and consumer '{advisory.Consumer}' at stream sequence {advisory.StreamSeq} with seq {ack.Seq}") 
@@ -280,7 +288,7 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                                     try
                                         let advisory = TerminatedAdvisory.parse msg.Data
                                         let subject = subjectFor' advisory
-                                        let! response = TerminatedAdvisory.handleMessage jsCtx subject advisory ct
+                                        let! response = TerminatedAdvisory.handleMessage jsCtx subject expectedSubjectPrefix advisory ct
                                         match response with
                                         | Ok ack when ack.Error <> null ->
                                             logger.LogInformation($"Processed terminated advisory message for stream '{advisory.Stream}' and consumer '{advisory.Consumer}' at stream sequence {advisory.StreamSeq} with seq {ack.Seq}") 
