@@ -149,9 +149,7 @@ jobs:
         file: ./src/DLQService/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
-        build-args: |
-          BUILD_SHA=${{ github.sha }}
-          CACHE_BUST=${{ github.run_number }}
+        no-cache: true
         tags: |
           ghcr.io/${{ github.repository_owner }}/dlqservice:${{ steps.version.outputs.build_version }}
           ghcr.io/${{ github.repository_owner }}/dlqservice:latest
@@ -163,29 +161,22 @@ jobs:
           org.opencontainers.image.revision=${{ github.sha }}
           org.opencontainers.image.source=${{ github.repositoryUrl }}
           org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/src/DLQService
-        # Use cache key based on dependency files to ensure proper cache invalidation
-        # Build args (BUILD_SHA and CACHE_BUST) force rebuild of source code layers
-        # This prevents Docker from reusing cached layers with old compiled code
-        # To completely disable cache for testing, comment out cache-from and cache-to
-        cache-from: |
-          type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }}
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }},mode=max
     - 
-        name: Commit and tag new version and create release
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        env: 
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |        
-            t_tag='dlq-service-v${{ steps.version.outputs.build_version }}'
-            git config user.name github-actions
-            git config user.email github-actions@github.com
-            git pull
-            git add './src/DLQService/VERSION'
-            git commit -m 'Update version for DLQ Service to ${{ steps.version.outputs.build_version }}'
-            git push origin main
-            git tag -a "$t_tag" -m "Released new version of DLQ Service."
-            git push origin "$t_tag"
-            gh release create 'dlq-service-${{ steps.version.outputs.build_version }}' \
-                -t 'DLQ Service ${{ steps.version.outputs.build_version }}' \
-                --generate-notes
+      name: Commit and tag new version and create release
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      env: 
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |        
+        t_tag='dlq-service-v${{ steps.version.outputs.build_version }}'
+        git config user.name github-actions
+        git config user.email github-actions@github.com
+        git pull
+        git add './src/DLQService/VERSION'
+        git commit -m 'Update version for DLQ Service to ${{ steps.version.outputs.build_version }}'
+        git push origin main
+        git tag -a "$t_tag" -m "Released new version of DLQ Service."
+        git push origin "$t_tag"
+        gh release create 'dlq-service-${{ steps.version.outputs.build_version }}' \
+          -t 'DLQ Service ${{ steps.version.outputs.build_version }}' \
+          --generate-notes
 
