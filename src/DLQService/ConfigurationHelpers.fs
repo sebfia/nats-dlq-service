@@ -55,6 +55,26 @@ let inline intParseWithDefault defaultValue (str: string) =
         | (true, i) -> i
         | _ -> defaultValue
 
+let inline int64ParseWithDefault defaultValue (str: string) =
+        match Int64.TryParse str with
+        | (true, i) -> i
+        | _ -> defaultValue
+
+let inline boolParseWithDefault defaultValue (str: string) =
+        match Boolean.TryParse str with
+        | (true, b) -> b
+        | _ -> defaultValue
+
+let inline timeSpanDaysParseWithDefault defaultValue (str: string) =
+        match Double.TryParse str with
+        | (true, days) -> TimeSpan.FromDays days
+        | _ -> defaultValue
+
+let inline timeSpanMinutesParseWithDefault defaultValue (str: string) =
+        match Double.TryParse str with
+        | (true, minutes) -> TimeSpan.FromMinutes minutes
+        | _ -> defaultValue
+
 
 // "/Users/sebastian/Documents/blobs" |> expandTemplate
 // "{Docs}/blobs" |> expandEnvironmentFolderIfNecessary
