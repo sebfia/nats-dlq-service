@@ -3,6 +3,10 @@
 ###############
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 
+# Build argument to force cache invalidation when source code changes
+ARG BUILD_SHA=unknown
+ARG CACHE_BUST=1
+
 WORKDIR /src
 
 # Copy dependency files first for better layer caching
@@ -16,6 +20,10 @@ RUN dotnet tool restore
 
 # Restore Paket dependencies (all groups)
 RUN dotnet paket restore
+
+# Use build args to ensure this layer is invalidated when source changes
+# This prevents Docker from reusing cached layers with old compiled code
+RUN echo "Build SHA: ${BUILD_SHA}, Cache bust: ${CACHE_BUST}"
 
 # Now copy source code (this layer will be invalidated on source changes)
 COPY src ./src
