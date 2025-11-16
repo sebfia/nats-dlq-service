@@ -64,19 +64,64 @@ jobs:
         fi
         echo $VER > ./src/DLQService/VERSION
         echo "build_version=$VER" >> $GITHUB_OUTPUT
+    -
+      name: Compute cache key for dependencies
+      id: cache-key
+      run: |
+        # Create a hash of dependency files to use as cache key
+        # This ensures cache is invalidated when dependencies change
+        # Handle missing files gracefully
+        HASH_INPUT=""
+        for file in paket.lock paket.dependencies global.json .config/dotnet-tools.json; do
+          if [ -f "$file" ]; then
+            HASH_INPUT="${HASH_INPUT}$(sha256sum "$file" 2>/dev/null || echo "$file:missing")"
+          fi
+        done
+        CACHE_KEY=$(echo -n "$HASH_INPUT" | sha256sum | cut -d' ' -f1)
+        echo "cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
+        echo "Cache key computed: $CACHE_KEY"
+    - 
+      name: Cache .NET tools
+      uses: actions/cache@v4
+      with:
+        path: ~/.dotnet/tools
+        key: dotnet-tools-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        restore-keys: |
+          dotnet-tools-${{ runner.os }}-
     - 
       name: Restore dotnet tools (Paket)
       run: |
         dotnet tool restore
         echo "${HOME}/.dotnet/tools" >> $GITHUB_PATH
     -
+      name: Cache Paket packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          .paket
+          paket-files
+        key: paket-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        restore-keys: |
+          paket-${{ runner.os }}-
+    -
       name: Install nuget packages with paket.
       run: dotnet paket install
+    - 
+      name: Cache .NET restore
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.nuget/packages
+          src/DLQService/**/bin
+          src/DLQService/**/obj
+        key: dotnet-restore-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
+        restore-keys: |
+          dotnet-restore-${{ runner.os }}-
     - 
       name: Build project in release mode
       run: |
         dotnet restore ${{ steps.set_env.outputs.project_path }}
-        dotnet build --configuration Release ${{ steps.set_env.outputs.project_path }}
+        dotnet build --configuration Release --no-incremental ${{ steps.set_env.outputs.project_path }}
     -
       # we need qemu and buildx so we can build multiple platforms later
       name: Set up QEMU
@@ -115,8 +160,12 @@ jobs:
           org.opencontainers.image.revision=${{ github.sha }}
           org.opencontainers.image.source=${{ github.repositoryUrl }}
           org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/src/DLQService
-        cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache
-        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache,mode=max
+        # Use cache key based on dependency files to ensure proper cache invalidation
+        # This prevents stale cache from previous versions
+        cache-from: |
+          type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }}
+          type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache
+        cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }},mode=max
     - 
         name: Commit and tag new version and create release
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
