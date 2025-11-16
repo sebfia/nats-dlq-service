@@ -54,7 +54,7 @@ The DLQService automatically listens for two types of failed messages from servi
 
 ## Configuration
 
-Set the NATS URL, namespace, and environment using configuration files or environment variables.
+Set the NATS URL, namespace, environment, and DLQ stream properties using configuration files or environment variables.
 
 ### Local Development
 
@@ -66,6 +66,10 @@ Set the NATS URL, namespace, and environment using configuration files or enviro
   "Namespace": "Mercator",
   "Environment": "development",
   "NatsUrl": "nats://localhost:4222",
+  "DLQStream": {
+    "NumReplicas": "1",
+    "AllowUpdateStream": "true"
+  },
   "ConnectionStrings": {}
 }
 ```
@@ -79,22 +83,77 @@ Set the NATS URL, namespace, and environment using configuration files or enviro
   "Namespace": "Mercator",
   "Environment": "production",
   "NatsUrl": "nats://nats:4222",
-  "DLQStreamReplicas": "1",
+  "DLQStream": {
+    "NumReplicas": "3",
+    "Retention": "Limits",
+    "Storage": "File",
+    "NoAck": "false",
+    "Compression": "S2",
+    "MaxAgeDays": "365",
+    "Discard": "Old",
+    "AllowDirect": "true",
+    "DuplicateWindowMinutes": "2.0",
+    "MaxMsgs": "-1",
+    "MaxBytes": "-1",
+    "MaxMsgSize": "-1",
+    "MaxConsumers": "-1",
+    "AllowUpdateStream": "false"
+  },
   "ConnectionStrings": {}
 }
 ```
 
-**Note**: `DLQStreamReplicas` defaults to `1` (compatible with non-clustered NATS). Set to `3` or higher only if your NATS server is running in clustered mode.
+### Configuration Options
 
-The Dockerfile automatically copies this file into the container. The service will load it automatically since `DOTNET_ENVIRONMENT=Production` is set in the Docker image.
-
-### Environment Variables (override files at runtime)
+#### General Settings
 
 - `Environment` = `development` | `staging` | `production` (or `dev` | `stage` | `prod`)
 - `DOTNET_ENVIRONMENT` = `Development` | `Staging` | `Production` (fallback if `Environment` not set)
 - `Namespace` = logical namespace for subjects/streams (default: `"Mercator"`)
 - `NatsUrl` = `nats://<host>:<port>`
-- `DLQStreamReplicas` = number of replicas for the DLQ stream (default: `1`, use `3` or higher only for clustered NATS)
+
+#### DLQ Stream Configuration (`DLQStream` section)
+
+All properties are optional and will use the defaults if not specified:
+
+- **`NumReplicas`** (default: `1`) - Number of replicas for the DLQ stream. Set to `3` or higher only for clustered NATS.
+
+- **`Retention`** (default: `Limits`) - Stream retention policy
+  - `Limits` - Retain based on limits (MaxMsgs, MaxBytes, MaxAge)
+  - `Interest` - Retain while there are consumers
+  - `Workqueue` - Messages removed after acknowledgment
+
+- **`Storage`** (default: `File`) - Storage backend
+  - `File` - Persistent file storage
+  - `Memory` - In-memory storage (faster but not persistent)
+
+- **`NoAck`** (default: `false`) - Disable message acknowledgments
+
+- **`Compression`** (default: `S2`) - Compression algorithm
+  - `S2` - S2 compression (recommended)
+  - `None` - No compression
+
+- **`MaxAgeDays`** (default: `365`) - Maximum age of messages in days. Set to `0` for unlimited.
+
+- **`Discard`** (default: `Old`) - Discard policy when limits are reached
+  - `Old` - Discard oldest messages
+  - `New` - Reject new messages
+
+- **`AllowDirect`** (default: `true`) - Allow direct access to messages for consumers
+
+- **`DuplicateWindowMinutes`** (default: `2.0`) - Window for duplicate message detection in minutes
+
+- **`MaxMsgs`** (default: `-1`) - Maximum number of messages. `-1` for unlimited.
+
+- **`MaxBytes`** (default: `-1`) - Maximum total bytes. `-1` for unlimited.
+
+- **`MaxMsgSize`** (default: `-1`) - Maximum message size in bytes. `-1` for unlimited.
+
+- **`MaxConsumers`** (default: `-1`) - Maximum number of consumers. `-1` for unlimited.
+
+- **`AllowUpdateStream`** (default: `true`) - **IMPORTANT:** When set to `false`, prevents any updates to the DLQ stream configuration after initial creation. Use this in production to lock down the stream configuration.
+
+**Note**: The Dockerfile automatically copies `appsettings.Production.json` into the container. The service will load it automatically since `DOTNET_ENVIRONMENT=Production` is set in the Docker image.
 
 ## How to run locally
 
@@ -159,7 +218,10 @@ let consumerConfig = ConsumerConfig(
 
 ## Operational notes
 
-- The service will ensure a durable DLQ stream exists per environment: `{NAMESPACE}_{ENV}_DLQ` (file storage, S2 compression in Production).
+- The service will ensure a durable DLQ stream exists per environment: `{NAMESPACE}_{ENV}_DLQ`.
+- **Stream configuration**: All stream properties (retention, storage, compression, limits, etc.) are fully configurable via the `DLQStream` configuration section. If not specified, sensible defaults are used.
+- **Production safety**: Set `AllowUpdateStream: false` in production to prevent accidental modifications to the DLQ stream configuration after initial creation. Once the stream exists, the service will skip updates when this is `false`.
+- **Development flexibility**: Keep `AllowUpdateStream: true` in development to allow iterative configuration changes during testing.
 - Messages are appended under subjects reflecting the original stream and consumer, making filtering and reprocessing straightforward.
 - **Terminated messages**: NATS automatically publishes advisory events when services call `AckTerminateAsync()`. No action required from services.
 - **Undeliverable messages**: NATS automatically publishes advisory events when messages exceed `MaxDeliver`. No action required from services.
@@ -176,9 +238,14 @@ let consumerConfig = ConsumerConfig(
   - Check logs; in Production they are JSON on stdout.
   - Look for error messages like "Skipping message from subject '...' (does not match namespace pattern '...')" which indicate filtering is working but subjects don't match.
   - Verify that NATS JetStream advisory events are enabled (they are enabled by default).
+- Stream configuration not updating:
+  - Check if `AllowUpdateStream` is set to `false` in your configuration. This is intentional for production safety.
+  - Review logs for messages like "DLQ stream already exists and AllowUpdateStream is false. Skipping update."
+  - If you need to update stream configuration in production, temporarily set `AllowUpdateStream: true`, restart the service, then set it back to `false`.
 - Confirm the stream exists and subjects are bound:
   - Stream: `{NAMESPACE}_{ENV}_DLQ`
   - Subjects: `{namespace}.{env}.dlq.>`
+  - Use NATS CLI: `nats stream info {NAMESPACE}_{ENV}_DLQ`
 - Advisory events are received but no DLQ entries appear:
   - Check that the original message subject matches the namespace/environment pattern (`{namespace}.{env}.>`).
   - Verify the advisory event JSON contains the expected fields: `stream`, `consumer_seq`, `stream_seq`, `deliveries`.

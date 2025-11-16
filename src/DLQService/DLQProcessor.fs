@@ -129,30 +129,160 @@ module TerminatedAdvisory =
             return Error (sprintf "Failed to handle terminated message: %s" ex.Message)
     }
 
+/// DLQ Stream configuration
+type DLQStreamConfig = {
+    NumReplicas: int
+    Retention: StreamConfigRetention
+    Storage: StreamConfigStorage
+    NoAck: bool
+    Compression: StreamConfigCompression
+    MaxAge: TimeSpan
+    Discard: StreamConfigDiscard
+    AllowDirect: bool
+    DuplicateWindow: TimeSpan
+    MaxMsgs: int64
+    MaxBytes: int64
+    MaxMsgSize: int
+    MaxConsumers: int
+    AllowUpdateStream: bool
+}
+
+module DLQStreamConfig =
+    let fromConfiguration (configuration: IConfiguration) : DLQStreamConfig =
+        let getConfigValue key = configuration |> Config.tryGetConfigValue key
+        
+        {
+            NumReplicas = 
+                getConfigValue "DLQStream:NumReplicas"
+                |> Option.map (Config.intParseWithDefault 1)
+                |> Option.defaultValue 1
+            
+            Retention = 
+                getConfigValue "DLQStream:Retention"
+                |> Option.bind (fun v -> 
+                    match v.ToLowerInvariant() with
+                    | "limits" -> Some StreamConfigRetention.Limits
+                    | "interest" -> Some StreamConfigRetention.Interest
+                    | "workqueue" -> Some StreamConfigRetention.Workqueue
+                    | _ -> None)
+                |> Option.defaultValue StreamConfigRetention.Limits
+            
+            Storage = 
+                getConfigValue "DLQStream:Storage"
+                |> Option.bind (fun v -> 
+                    match v.ToLowerInvariant() with
+                    | "file" -> Some StreamConfigStorage.File
+                    | "memory" -> Some StreamConfigStorage.Memory
+                    | _ -> None)
+                |> Option.defaultValue StreamConfigStorage.File
+            
+            NoAck = 
+                getConfigValue "DLQStream:NoAck"
+                |> Option.map (Config.boolParseWithDefault false)
+                |> Option.defaultValue false
+            
+            Compression = 
+                getConfigValue "DLQStream:Compression"
+                |> Option.bind (fun v -> 
+                    match v.ToLowerInvariant() with
+                    | "none" -> Some StreamConfigCompression.None
+                    | "s2" -> Some StreamConfigCompression.S2
+                    | _ -> None)
+                |> Option.defaultValue StreamConfigCompression.S2
+            
+            MaxAge = 
+                getConfigValue "DLQStream:MaxAgeDays"
+                |> Option.map (Config.timeSpanDaysParseWithDefault (TimeSpan.FromDays 365.))
+                |> Option.defaultValue (TimeSpan.FromDays 365.)
+            
+            Discard = 
+                getConfigValue "DLQStream:Discard"
+                |> Option.bind (fun v -> 
+                    match v.ToLowerInvariant() with
+                    | "old" -> Some StreamConfigDiscard.Old
+                    | "new" -> Some StreamConfigDiscard.New
+                    | _ -> None)
+                |> Option.defaultValue StreamConfigDiscard.Old
+            
+            AllowDirect = 
+                getConfigValue "DLQStream:AllowDirect"
+                |> Option.map (Config.boolParseWithDefault true)
+                |> Option.defaultValue true
+            
+            DuplicateWindow = 
+                getConfigValue "DLQStream:DuplicateWindowMinutes"
+                |> Option.map (Config.timeSpanMinutesParseWithDefault (TimeSpan.FromMinutes 2.0))
+                |> Option.defaultValue (TimeSpan.FromMinutes 2.0)
+            
+            MaxMsgs = 
+                getConfigValue "DLQStream:MaxMsgs"
+                |> Option.map (Config.int64ParseWithDefault -1L)
+                |> Option.defaultValue -1L
+            
+            MaxBytes = 
+                getConfigValue "DLQStream:MaxBytes"
+                |> Option.map (Config.int64ParseWithDefault -1L)
+                |> Option.defaultValue -1L
+            
+            MaxMsgSize = 
+                getConfigValue "DLQStream:MaxMsgSize"
+                |> Option.map (Config.intParseWithDefault -1)
+                |> Option.defaultValue -1
+            
+            MaxConsumers = 
+                getConfigValue "DLQStream:MaxConsumers"
+                |> Option.map (Config.intParseWithDefault -1)
+                |> Option.defaultValue -1
+            
+            AllowUpdateStream = 
+                getConfigValue "DLQStream:AllowUpdateStream"
+                |> Option.map (Config.boolParseWithDefault true)
+                |> Option.defaultValue true
+        }
+
 /// Creates or updates the DLQ stream
-let inline createOrUpdateDLQStream (js: INatsJSContext) (ns: string) (env: string) (numReplicas: int) = cancellableTask {
+let inline createOrUpdateDLQStream (js: INatsJSContext) (ns: string) (env: string) (streamConfig: DLQStreamConfig) (logger: ILogger) = cancellableTask {
     try
         let! ct = CancellableTask.getCancellationToken()
         
         let streamName = $"{ns.ToUpperInvariant()}_{env}_DLQ"
         let subject = $"{ns.ToLowerInvariant()}.{env.ToLowerInvariant()}.dlq.>"
         
-        let config = StreamConfig(
-            name = streamName,
-            subjects = [| subject |],
-            Retention = StreamConfigRetention.Limits,
-            Storage = StreamConfigStorage.File,
-            NoAck = false,
-            Compression = StreamConfigCompression.S2,
-            NumReplicas = numReplicas,
-            MaxAge = TimeSpan.FromDays 365.,
-            Discard = StreamConfigDiscard.Old,
-            AllowDirect = true,
-            DuplicateWindow = TimeSpan.FromMinutes 2.0
-        )
+        // Check if stream exists and if updates are allowed
+        let! existingStream = 
+            task {
+                try
+                    let! stream = js.GetStreamAsync(streamName, cancellationToken = ct)
+                    return Some stream
+                with
+                | _ -> return None
+            }
         
-        let! stream = js.CreateOrUpdateStreamAsync(config, ct)
-        return Ok stream
+        match existingStream, streamConfig.AllowUpdateStream with
+        | Some stream, false ->
+            logger.LogInformation($"DLQ stream '{streamName}' already exists and AllowUpdateStream is false. Skipping update.")
+            return Ok stream
+        | _ ->
+            let config = StreamConfig(
+                name = streamName,
+                subjects = [| subject |],
+                Retention = streamConfig.Retention,
+                Storage = streamConfig.Storage,
+                NoAck = streamConfig.NoAck,
+                Compression = streamConfig.Compression,
+                NumReplicas = streamConfig.NumReplicas,
+                MaxAge = streamConfig.MaxAge,
+                Discard = streamConfig.Discard,
+                AllowDirect = streamConfig.AllowDirect,
+                DuplicateWindow = streamConfig.DuplicateWindow,
+                MaxMsgs = streamConfig.MaxMsgs,
+                MaxBytes = streamConfig.MaxBytes,
+                MaxMsgSize = streamConfig.MaxMsgSize,
+                MaxConsumers = streamConfig.MaxConsumers
+            )
+            
+            let! stream = js.CreateOrUpdateStreamAsync(config, ct)
+            return Ok stream
     with ex -> 
         return Error (sprintf "Failed to create or update DLQ stream: %s" ex.Message)
 }
@@ -208,17 +338,19 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                             elif hostEnvironment.IsStaging() then "STAGING"
                             else "PROD"
                     
-                    // Get replica count from configuration (default: 1 for compatibility with non-clustered NATS)
-                    let numReplicas = 
-                        configuration 
-                        |> Config.tryGetConfigValue "DLQStreamReplicas"
-                        |> Option.map (Config.intParseWithDefault 1)
-                        |> Option.defaultValue 1
+                    // Load DLQ stream configuration from appsettings
+                    let dlqStreamConfig = DLQStreamConfig.fromConfiguration configuration
                     
-                    logger.LogInformation("Using {Replicas} replica(s) for DLQ stream", [| box numReplicas |])
+                    logger.LogInformation("DLQ Stream Configuration: Replicas={Replicas}, Retention={Retention}, Storage={Storage}, Compression={Compression}, MaxAgeDays={MaxAgeDays}, AllowUpdateStream={AllowUpdateStream}", 
+                        [| box dlqStreamConfig.NumReplicas
+                           box dlqStreamConfig.Retention
+                           box dlqStreamConfig.Storage
+                           box dlqStreamConfig.Compression
+                           box dlqStreamConfig.MaxAge.TotalDays
+                           box dlqStreamConfig.AllowUpdateStream |])
                     
                     // Create or update DLQ stream
-                    let! dlqStreamResult = createOrUpdateDLQStream jsCtx ns env numReplicas
+                    let! dlqStreamResult = createOrUpdateDLQStream jsCtx ns env dlqStreamConfig logger ct
                     let _ =
                         dlqStreamResult |> Result.defaultWith (fun err ->
                             logger.LogCritical $"Failed to create or update DLQ stream: {err}"
