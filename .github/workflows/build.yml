@@ -112,14 +112,13 @@ jobs:
       with:
         path: |
           ~/.nuget/packages
-          src/DLQService/**/bin
-          src/DLQService/**/obj
         key: dotnet-restore-${{ runner.os }}-${{ steps.cache-key.outputs.cache_key }}
         restore-keys: |
           dotnet-restore-${{ runner.os }}-
     - 
       name: Build project in release mode
       run: |
+        dotnet clean ${{ steps.set_env.outputs.project_path }} --configuration Release || true
         dotnet restore ${{ steps.set_env.outputs.project_path }}
         dotnet build --configuration Release --no-incremental ${{ steps.set_env.outputs.project_path }}
     -
