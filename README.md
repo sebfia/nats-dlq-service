@@ -20,14 +20,21 @@ The DLQService automatically listens for two types of failed messages from servi
    - **No action required from services** - the DLQService handles everything automatically
 
 **Message filtering**: The service validates that advisory events match the configured namespace and environment by checking the stream name (format: `{NAMESPACE}_{ENV}_*`) before processing. This ensures that:
+
 - Each DLQService instance only handles messages from services within its designated namespace/environment
+
 - Advisory events from streams in other namespaces or environments are safely ignored
+
 - Cross-environment and cross-namespace contamination is prevented
 
 **DLQ Storage**: All processed messages are published to a dedicated JetStream DLQ stream:
+
 - Stream name: `{NAMESPACE}_{ENV}_DLQ`
+
 - Subject used to store: `{namespace}.{env}.dlq.{stream}.{consumer}`
+
 - Payload: original message body fetched from the originating stream so nothing is lost
+
 - Headers:
   - Copies all original headers as `X-DLQ-<OriginalHeaderName>`
   - `X-DLQ-Original-Subject`: original subject (if provided)
@@ -108,11 +115,13 @@ Logs in Development are human-readable; in Production, they are JSON-formatted.
 ### For Terminated Messages
 
 When a service calls `AckTerminateAsync()` on a message, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>`. The DLQService automatically:
+
 - Receives the advisory event
 - Validates it matches the configured namespace/environment (by checking the stream name)
 - Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
 
 **Example** (F# - no DLQ code needed):
+
 ```fsharp
 // Just terminate the message - DLQService handles the rest automatically
 do! msg.AckTerminateAsync()
@@ -121,11 +130,13 @@ do! msg.AckTerminateAsync()
 ### For Undeliverable Messages (Max Deliveries Exceeded)
 
 When a message exceeds the consumer's `MaxDeliver` threshold, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`. The DLQService automatically:
+
 - Receives the advisory event
 - Validates it matches the configured namespace/environment (by checking the stream name)
 - Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
 
 **Example** (F# consumer configuration - no DLQ configuration needed):
+
 ```fsharp
 let consumerConfig = ConsumerConfig(
     Name = "MY_CONSUMER",
@@ -136,7 +147,8 @@ let consumerConfig = ConsumerConfig(
 )
 ```
 
-**Important**: 
+**Important**:
+
 - The DLQService filters advisory events by stream name (format: `{NAMESPACE}_{ENV}_*`)
 - If the DLQService is configured with `Namespace: "Mercator"` and `Environment: "development"`, it will only process advisory events for streams starting with `MERCATOR_DEV_`
 - Advisory events from streams like `OTHERNAMESPACE_DEV_*` or `MERCATOR_STAGING_*` will be logged as debug messages and skipped.
