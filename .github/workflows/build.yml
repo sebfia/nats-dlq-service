@@ -149,6 +149,9 @@ jobs:
         file: ./src/DLQService/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
+        build-args: |
+          BUILD_SHA=${{ github.sha }}
+          CACHE_BUST=${{ github.run_number }}
         tags: |
           ghcr.io/${{ github.repository_owner }}/dlqservice:${{ steps.version.outputs.build_version }}
           ghcr.io/${{ github.repository_owner }}/dlqservice:latest
@@ -161,10 +164,11 @@ jobs:
           org.opencontainers.image.source=${{ github.repositoryUrl }}
           org.opencontainers.image.url=https://github.com/${{ github.repository }}/tree/main/src/DLQService
         # Use cache key based on dependency files to ensure proper cache invalidation
-        # This prevents stale cache from previous versions
+        # Build args (BUILD_SHA and CACHE_BUST) force rebuild of source code layers
+        # This prevents Docker from reusing cached layers with old compiled code
+        # To completely disable cache for testing, comment out cache-from and cache-to
         cache-from: |
           type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }}
-          type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache
         cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/dlqservice:buildcache-${{ steps.cache-key.outputs.cache_key }},mode=max
     - 
         name: Commit and tag new version and create release
