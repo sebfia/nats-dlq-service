@@ -82,3 +82,5 @@ local.settings.json
 .idea/
 *.sln.iml
 
+
+.fake

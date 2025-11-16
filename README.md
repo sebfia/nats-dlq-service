@@ -27,7 +27,8 @@ The DLQService automatically listens for two types of failed messages from servi
 **DLQ Storage**: All processed messages are published to a dedicated JetStream DLQ stream:
 - Stream name: `{NAMESPACE}_{ENV}_DLQ`
 - Subject used to store: `{namespace}.{env}.dlq.{stream}.{consumer}`
-- Adds useful metadata as headers:
+- Payload: original message body fetched from the originating stream so nothing is lost
+- Headers:
   - Copies all original headers as `X-DLQ-<OriginalHeaderName>`
   - `X-DLQ-Original-Subject`: original subject (if provided)
   - `X-DLQ-Original-Stream`: stream name
@@ -109,7 +110,7 @@ Logs in Development are human-readable; in Production, they are JSON-formatted.
 When a service calls `AckTerminateAsync()` on a message, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>`. The DLQService automatically:
 - Receives the advisory event
 - Validates it matches the configured namespace/environment (by checking the stream name)
-- Stores the metadata in the DLQ stream
+- Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
 
 **Example** (F# - no DLQ code needed):
 ```fsharp
@@ -122,7 +123,7 @@ do! msg.AckTerminateAsync()
 When a message exceeds the consumer's `MaxDeliver` threshold, NATS automatically publishes an advisory event to `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`. The DLQService automatically:
 - Receives the advisory event
 - Validates it matches the configured namespace/environment (by checking the stream name)
-- Stores the metadata in the DLQ stream
+- Fetches the original message payload + headers from the stream and republishes them to the DLQ with DLQ metadata headers
 
 **Example** (F# consumer configuration - no DLQ configuration needed):
 ```fsharp
@@ -146,7 +147,7 @@ let consumerConfig = ConsumerConfig(
 - Messages are appended under subjects reflecting the original stream and consumer, making filtering and reprocessing straightforward.
 - **Terminated messages**: NATS automatically publishes advisory events when services call `AckTerminateAsync()`. No action required from services.
 - **Undeliverable messages**: NATS automatically publishes advisory events when messages exceed `MaxDeliver`. No action required from services.
-- **Note**: Advisory events contain metadata (stream, consumer, subject, delivery count) but not the message payload. The DLQ stores the advisory event metadata for tracking and analysis.
+- **Payload handling**: When an advisory event is received, the service fetches the original message from the stream and republishes the exact payload into the DLQ stream alongside the metadata.
 - The service only processes advisory events for streams that match its configured namespace and environment, preventing cross-contamination.
 
 ## Troubleshooting
@@ -184,4 +185,3 @@ docker build -f src/DLQService/Dockerfile -t dlq-service:latest .
 ## Notes
 
 - This service follows the same hosting and logging patterns used by `IdentityService`, adapted for background worker semantics.
-
