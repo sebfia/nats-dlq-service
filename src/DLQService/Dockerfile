@@ -22,6 +22,9 @@ COPY src ./src
 
 WORKDIR /src/src/DLQService
 
+# Remove any residual bin/obj folders to ensure clean build
+RUN find /src -type d \( -name bin -o -name obj \) -exec rm -rf {} + || true
+
 RUN dotnet publish DLQService.fsproj \
     -c Release \
     -o /app/publish \
