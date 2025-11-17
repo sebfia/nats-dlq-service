@@ -14,8 +14,8 @@ COPY .paket ./.paket
 # Restore dotnet tools (Paket)
 RUN dotnet tool restore
 
-# Restore Paket dependencies (all groups)
-RUN dotnet paket restore
+# Clear any residual caches and restore Paket dependencies (all groups)
+RUN dotnet nuget locals all --clear && dotnet paket restore
 
 # Copy source code
 COPY src ./src
