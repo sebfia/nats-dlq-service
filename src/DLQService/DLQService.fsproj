@@ -4,7 +4,10 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <!-- Suppress warnings for packages that are now part of .NET 10 framework -->
+    <!-- Suppress F# state machine warnings - known issue with .NET 10 F# compiler -->
     <NoWarn>$(NoWarn);NU1510</NoWarn>
+    <!-- Force clean rebuild to avoid compiler state machine bugs -->
+    <UseSharedCompilation>false</UseSharedCompilation>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include=".\Properties\DLQService.fs" />

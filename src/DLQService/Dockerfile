@@ -3,6 +3,10 @@
 ###############
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 
+# Build argument to force cache invalidation
+ARG BUILD_ID=1
+ARG GIT_SHA=unknown
+
 WORKDIR /src
 
 # Copy dependency files first for better layer caching
@@ -22,16 +26,24 @@ COPY src ./src
 
 WORKDIR /src/src/DLQService
 
+# Use build args to ensure this layer is rebuilt on every commit
+# This prevents Docker from reusing cached layers with old compiled code
+RUN echo "Build ID: ${BUILD_ID}, Git SHA: ${GIT_SHA}"
+
 # Remove any residual bin/obj folders to ensure clean build
 RUN find /src -type d \( -name bin -o -name obj \) -exec rm -rf {} + || true
 
-RUN dotnet publish DLQService.fsproj \
+# Build with no cache and force clean rebuild
+RUN dotnet clean DLQService.fsproj --configuration Release || true && \
+    dotnet publish DLQService.fsproj \
     -c Release \
     -o /app/publish \
+    --no-incremental \
     -p:PublishTrimmed=true \
     -p:PublishSingleFile=true \
     -p:InvariantGlobalization=true \
-    -p:ReadyToRun=true
+    -p:ReadyToRun=true \
+    -p:UseSharedCompilation=false
 
 ################
 # Runtime stage#

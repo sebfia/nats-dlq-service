@@ -26,11 +26,6 @@ jobs:
     name: Build DLQ Service
 
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        dotnet-version: [ '10.0.x' ]
-        dotnet-sdk-version: [ 'net10.0' ]
     
     permissions:
       contents: write 
@@ -42,32 +37,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-    # Force cold restore to fix F# compiler state machine errors (FS0073, FS3511)
-    # This step clears all runner-side caches to ensure fresh package/tool restores
-    # Reference: https://github.com/sebfia/nats-dlq-service/actions/runs/19405431583/job/55519358311
-    # TODO: Once builds are stable, consider removing or adjusting cache clearing strategy
-    - 
-      name: Ensure clean runner caches and force cold restore
-      run: |
-        set -eux
-        dotnet --info || echo "dotnet not yet available"
-        # Clear all NuGet/dotnet caches
-        dotnet nuget locals all --clear || true
-        # Remove cached directories
-        rm -rf ~/.nuget/packages ~/.local/share/NuGet/v3-cache ~/.dotnet/tools ~/.paket .paket/paket-files paket-files || true
-        # Clear paket cache if paket is available
-        if command -v paket >/dev/null 2>&1; then paket clear-cache || true; fi
-    - 
-      name: Setup dotnet
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: ${{ matrix.dotnet-version }}
-    -
-      name: Put project file and output path into environment variable.
-      id: set_env
-      run: |
-        echo "project_path=./src/DLQService/DLQService.fsproj" >> $GITHUB_OUTPUT
-        echo "output_path=./src/DLQService/deploy" >> $GITHUB_OUTPUT
     -
       name: Read Version
       id: version
@@ -79,66 +48,6 @@ jobs:
         fi
         echo $VER > ./src/DLQService/VERSION
         echo "build_version=$VER" >> $GITHUB_OUTPUT
-    -
-      name: Compute cache key for dependencies
-      id: cache-key
-      run: |
-        # Create a hash of dependency files to use as cache key
-        # This ensures cache is invalidated when dependencies change
-        # Handle missing files gracefully
-        HASH_INPUT=""
-        for file in paket.lock paket.dependencies global.json .config/dotnet-tools.json; do
-          if [ -f "$file" ]; then
-            HASH_INPUT="${HASH_INPUT}$(sha256sum "$file" 2>/dev/null || echo "$file:missing")"
-          fi
-        done
-        CACHE_KEY=$(echo -n "$HASH_INPUT" | sha256sum | cut -d' ' -f1)
-        echo "cache_key=$CACHE_KEY" >> $GITHUB_OUTPUT
-        echo "Cache key computed: $CACHE_KEY"
-    - 
-      name: Cache .NET tools
-      uses: actions/cache@v4
-      with:
-        path: ~/.dotnet/tools
-        key: dotnet-tools-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock', '.config/dotnet-tools.json') }}-v2
-        restore-keys: |
-          dotnet-tools-${{ runner.os }}-
-    - 
-      name: Restore dotnet tools (Paket)
-      run: |
-        dotnet tool restore
-        echo "${HOME}/.dotnet/tools" >> $GITHUB_PATH
-    -
-      name: Cache Paket packages
-      uses: actions/cache@v4
-      with:
-        path: |
-          .paket
-          paket-files
-        key: paket-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock') }}-v2
-        restore-keys: |
-          paket-${{ runner.os }}-
-    -
-      name: Install nuget packages with paket.
-      run: dotnet paket install
-    -
-      name: Restore with no-cache to ensure fresh packages
-      run: dotnet restore --no-cache || true
-    - 
-      name: Cache .NET restore
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.nuget/packages
-        key: dotnet-restore-${{ runner.os }}-${{ hashFiles('**/*.fsproj', '**/paket.dependencies', '**/paket.lock') }}-v2
-        restore-keys: |
-          dotnet-restore-${{ runner.os }}-
-    - 
-      name: Build project in release mode
-      run: |
-        dotnet clean ${{ steps.set_env.outputs.project_path }} --configuration Release || true
-        dotnet restore ${{ steps.set_env.outputs.project_path }}
-        dotnet build --configuration Release --no-incremental ${{ steps.set_env.outputs.project_path }}
     -
       # we need qemu and buildx so we can build multiple platforms later
       name: Set up QEMU
@@ -167,6 +76,9 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: ${{ github.event_name != 'pull_request' }}
         no-cache: true
+        build-args: |
+          BUILD_ID=${{ github.run_number }}
+          GIT_SHA=${{ github.sha }}
         tags: |
           ghcr.io/${{ github.repository_owner }}/dlqservice:${{ steps.version.outputs.build_version }}
           ghcr.io/${{ github.repository_owner }}/dlqservice:latest
