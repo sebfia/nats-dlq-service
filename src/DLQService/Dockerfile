@@ -13,12 +13,12 @@ WORKDIR /src
 COPY global.json ./
 COPY .config ./.config/
 COPY paket.dependencies paket.lock ./
-COPY .paket ./.paket
 
 # Restore dotnet tools (Paket)
 RUN dotnet tool restore
 
 # Clear any residual caches and restore Paket dependencies (all groups)
+# This will create the .paket directory automatically
 RUN dotnet nuget locals all --clear && dotnet paket restore
 
 # Copy source code
