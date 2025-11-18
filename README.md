@@ -3,7 +3,7 @@
 A lightweight .NET background service that centralizes dead-letter queue (DLQ) handling for NATS JetStream. Automatically captures terminated and undeliverable messages from services within your configured namespace and environment, and republishes them into a dedicated JetStream DLQ stream for later analysis or reprocessing.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
+[![.NET](https://img.shields.io/badge/.NET-9.0-purple.svg)](https://dotnet.microsoft.com/)
 
 ## What it does
 
