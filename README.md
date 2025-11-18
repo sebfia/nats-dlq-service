@@ -160,6 +160,8 @@ All properties are optional and will use the defaults if not specified:
 From the repository root or the service folder:
 
 ```bash
+dotnet tool restore        # installs the Paket alpha CLI from the manifest
+dotnet paket restore       # restores locked dependencies via Paket
 cd src/DLQService
 dotnet build
 DOTNET_ENVIRONMENT=Development dotnet run
@@ -253,9 +255,18 @@ let consumerConfig = ConsumerConfig(
 ## Build
 
 ```bash
+dotnet tool restore
+dotnet paket restore
 cd src/DLQService
 dotnet build
 ```
+
+## Package Management
+
+- Package resolution is handled by [`paket`](https://fsprojects.github.io/Paket/) (alpha channel) instead of NuGet.
+- The manifest at `.config/dotnet-tools.json` pins `paket` to `10.0.0-alpha011`; run `dotnet tool restore` after cloning.
+- Dependencies live in `paket.dependencies`/`paket.lock`, while per-project requirements continue to use `paket.references`.
+- MSBuild hooks (`.paket/Paket.Restore.props|targets`) ensure `dotnet build`/`dotnet publish` automatically invoke Paket.
 
 ## Docker
 

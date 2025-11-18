@@ -8,9 +8,6 @@ on:
       - src/DLQService/*.fsproj
       - src/DLQService/*.fs
       - src/DLQService/Dockerfile
-      - src/DLQService/paket.references
-      - paket.lock
-      - paket.dependencies
       - global.json
       - .github/workflows/build.yml
   workflow_dispatch:

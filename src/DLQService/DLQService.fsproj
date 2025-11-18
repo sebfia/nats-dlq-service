@@ -2,12 +2,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <!-- Suppress warnings for packages that are now part of .NET 10 framework -->
-    <!-- Suppress F# state machine warnings - known issue with .NET 10 F# compiler -->
     <NoWarn>$(NoWarn);NU1510</NoWarn>
     <!-- Force clean rebuild to avoid compiler state machine bugs -->
-    <UseSharedCompilation>false</UseSharedCompilation>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include=".\Properties\DLQService.fs" />
@@ -20,12 +18,6 @@
     <Content Include="appsettings.Production.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
-  <!-- Exclude packages that are now part of .NET 10 framework -->
-  <ItemGroup>
-    <PackageReference Update="System.IO.Pipelines" ExcludeAssets="All" />
-    <PackageReference Update="System.Text.Json" ExcludeAssets="All" />
-    <PackageReference Update="System.Threading.Channels" ExcludeAssets="All" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

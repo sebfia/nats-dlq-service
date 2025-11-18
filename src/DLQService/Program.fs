@@ -1,6 +1,5 @@
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.DependencyInjection
-open IcedTasks
 open System
 open System.Threading.Tasks
 open NLog
