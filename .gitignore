@@ -26,7 +26,6 @@ bld/
 .vs/
 
 # Paket
-.paket/
 paket-files/
 
 # F# project specific

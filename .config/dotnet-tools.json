@@ -3,11 +3,10 @@
   "isRoot": true,
   "tools": {
     "paket": {
-      "version": "10.0.0-alpha011",
+      "version": "9.0.2",
       "commands": [
         "paket"
-      ],
-      "rollForward": false
+      ]
     }
   }
 }

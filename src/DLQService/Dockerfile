@@ -1,7 +1,7 @@
 ###############
 # Build stage #
 ###############
-FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
+FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 
 # Build argument to force cache invalidation
 ARG BUILD_ID=1
@@ -11,18 +11,14 @@ WORKDIR /src
 
 # Copy dependency files first for better layer caching
 COPY global.json ./
-COPY .config ./.config/
-COPY paket.dependencies paket.lock ./
-
-# Restore dotnet tools (Paket)
-RUN dotnet tool restore
-
-# Clear any residual caches and restore Paket dependencies (all groups)
-# This will create the .paket directory automatically
-RUN dotnet nuget locals all --clear && dotnet paket restore
-
-# Copy source code
+COPY paket.dependencies ./
+COPY paket.lock ./
+COPY .config ./.config
 COPY src ./src
+
+# Install manifest tools (Paket alpha) and restore dependencies
+RUN dotnet tool restore
+RUN dotnet tool run paket restore
 
 WORKDIR /src/src/DLQService
 
@@ -30,25 +26,20 @@ WORKDIR /src/src/DLQService
 # This prevents Docker from reusing cached layers with old compiled code
 RUN echo "Build ID: ${BUILD_ID}, Git SHA: ${GIT_SHA}"
 
-# Remove any residual bin/obj folders to ensure clean build
-RUN find /src -type d \( -name bin -o -name obj \) -exec rm -rf {} + || true
-
 # Build with no cache and force clean rebuild
-RUN dotnet clean DLQService.fsproj --configuration Release || true && \
-    dotnet publish DLQService.fsproj \
+# Disable incremental compilation and use single-threaded compilation to avoid state machine issues
+RUN dotnet publish DLQService.fsproj \
     -c Release \
     -o /app/publish \
-    --no-incremental \
     -p:PublishTrimmed=true \
     -p:PublishSingleFile=true \
     -p:InvariantGlobalization=true \
-    -p:ReadyToRun=true \
-    -p:UseSharedCompilation=false
+    -p:ReadyToRun=true
 
 ################
 # Runtime stage#
 ################
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine
+FROM mcr.microsoft.com/dotnet/runtime-deps:9.0-alpine
 
 ENV DOTNET_EnableDiagnostics=0 \
     DOTNET_ENVIRONMENT=Production

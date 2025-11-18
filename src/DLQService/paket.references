@@ -1,6 +1,5 @@
 group DLQService
 FSharp.Core
-IcedTasks
 NLog
 NLog.Extensions.Logging
 Microsoft.Extensions.Logging
