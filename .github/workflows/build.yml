@@ -97,7 +97,16 @@ jobs:
         git config user.name github-actions
         git config user.email github-actions@github.com
         git pull
+        
+        # Update VERSION file
         git add './src/DLQService/VERSION'
+        
+        # Update README.md with new version
+        sed -i.bak "s|ghcr.io/sebfia/dlqservice:[0-9]*\.[0-9]*\.[0-9-]*|ghcr.io/sebfia/dlqservice:${{ steps.version.outputs.build_version }}|g" README.md
+        sed -i.bak "s|# Pull specific version (current: [0-9]*\.[0-9]*\.[0-9-]*)|# Pull specific version (current: ${{ steps.version.outputs.build_version }})|g" README.md
+        rm -f README.md.bak
+        git add README.md
+        
         git commit -m 'Update version for DLQ Service to ${{ steps.version.outputs.build_version }}'
         git push origin main
         git tag -a "$t_tag" -m "Released new version of DLQ Service."
@@ -105,4 +114,5 @@ jobs:
         gh release create 'dlq-service-${{ steps.version.outputs.build_version }}' \
           -t 'DLQ Service ${{ steps.version.outputs.build_version }}' \
           --generate-notes
+
 

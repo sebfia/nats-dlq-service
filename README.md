@@ -270,7 +270,36 @@ dotnet build
 
 ## Docker
 
-Build the Docker image:
+### Pull from GitHub Container Registry
+
+Pre-built images are automatically published to GitHub Container Registry (GHCR) on every push to `main`:
+
+```bash
+# Pull latest version
+docker pull ghcr.io/sebfia/dlqservice:latest
+
+# Pull specific version (current: 0.6.0)
+docker pull ghcr.io/sebfia/dlqservice:0.6.0
+
+# Pull by git commit SHA
+docker pull ghcr.io/sebfia/dlqservice:<git-sha>
+```
+
+Run the image:
+
+```bash
+docker run -d \
+  --name dlq-service \
+  -e DOTNET_ENVIRONMENT=Production \
+  -e NatsUrl=nats://your-nats-server:4222 \
+  -e Namespace=YourNamespace \
+  -e Environment=production \
+  ghcr.io/sebfia/dlqservice:latest
+```
+
+### Build locally
+
+Build the Docker image from source:
 
 ```bash
 docker build -f src/DLQService/Dockerfile -t dlq-service:latest .

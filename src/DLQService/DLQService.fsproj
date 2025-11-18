@@ -2,7 +2,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <!-- Suppress warnings for packages that are now part of .NET 10 framework -->
     <NoWarn>$(NoWarn);NU1510</NoWarn>
     <!-- Force clean rebuild to avoid compiler state machine bugs -->

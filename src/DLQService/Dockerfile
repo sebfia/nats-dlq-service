@@ -1,7 +1,7 @@
 ###############
 # Build stage #
 ###############
-FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine AS build
 
 # Build argument to force cache invalidation
 ARG BUILD_ID=1
@@ -39,7 +39,7 @@ RUN dotnet publish DLQService.fsproj \
 ################
 # Runtime stage#
 ################
-FROM mcr.microsoft.com/dotnet/runtime-deps:9.0-alpine
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine
 
 ENV DOTNET_EnableDiagnostics=0 \
     DOTNET_ENVIRONMENT=Production
@@ -56,4 +56,3 @@ RUN if ! getent group app >/dev/null; then addgroup -S app; fi \
 USER app
 
 ENTRYPOINT ["./DLQService"]
-
