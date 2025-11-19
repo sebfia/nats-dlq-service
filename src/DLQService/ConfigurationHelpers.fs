@@ -50,30 +50,26 @@ let inline adaptOSDirectorySeparator (s: string) =
         match Runtime.InteropServices.RuntimeInformation.IsOSPlatform(Runtime.InteropServices.OSPlatform.Windows) with
         | true -> s.Replace('/', Path.DirectorySeparatorChar)
         | _ -> s.Replace('\\', Path.DirectorySeparatorChar)
-let inline intParseWithDefault defaultValue (str: string) =
-        match Int32.TryParse str with
-        | (true, i) -> i
-        | _ -> defaultValue
 
-let inline int64ParseWithDefault defaultValue (str: string) =
-        match Int64.TryParse str with
-        | (true, i) -> i
-        | _ -> defaultValue
+let inline tryParseInt (str: string) =
+    match Int32.TryParse str with
+    | (true, i) -> Some i
+    | _ -> None
 
-let inline boolParseWithDefault defaultValue (str: string) =
-        match Boolean.TryParse str with
-        | (true, b) -> b
-        | _ -> defaultValue
+let inline tryParseInt64 (str: string) =
+    match Int64.TryParse str with
+    | (true, i) -> Some i
+    | _ -> None
 
-let inline timeSpanDaysParseWithDefault defaultValue (str: string) =
-        match Double.TryParse str with
-        | (true, days) -> TimeSpan.FromDays days
-        | _ -> defaultValue
+let inline tryParseBool (str: string) =
+    match Boolean.TryParse str with
+    | (true, b) -> Some b
+    | _ -> None
 
-let inline timeSpanMinutesParseWithDefault defaultValue (str: string) =
-        match Double.TryParse str with
-        | (true, minutes) -> TimeSpan.FromMinutes minutes
-        | _ -> defaultValue
+let inline tryParseFloat (str: string) =
+    match Double.TryParse str with
+    | (true, f) -> Some f
+    | _ -> None
 
 let inline isRunningInDocker() =
     File.Exists("/.dockerenv") ||
