@@ -71,11 +71,18 @@ let inline tryParseFloat (str: string) =
     | (true, f) -> Some f
     | _ -> None
 
+/// <summary>
+/// Detects if the application is running inside a Docker container or Kubernetes pod.
+/// Checks for the presence of the /.dockerenv file (Docker) or for "docker"/"kubepods" in /proc/1/cgroup (Docker/K8s).
+/// Returns true if running in a containerized environment, false otherwise.
+/// </summary>
 let inline isRunningInDocker() =
     File.Exists("/.dockerenv") ||
     (File.Exists("/proc/1/cgroup") &&
-     let content = File.ReadAllText("/proc/1/cgroup")
-     content.Contains("docker") || content.Contains("kubepods"))
+     (try
+         let content = File.ReadAllText("/proc/1/cgroup")
+         content.Contains("docker") || content.Contains("kubepods")
+      with _ -> false))
 
 // "/Users/sebastian/Documents/blobs" |> expandTemplate
 // "{Docs}/blobs" |> expandEnvironmentFolderIfNecessary
