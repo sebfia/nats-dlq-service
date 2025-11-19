@@ -103,6 +103,215 @@ Set the NATS URL, namespace, environment, and DLQ stream properties using config
 }
 ```
 
+### Configuration via Environment Variables
+
+When running in Docker, docker-compose, or Kubernetes, you can override any configuration setting using environment variables instead of modifying config files. .NET uses a hierarchical configuration system where environment variables take precedence over configuration files.
+
+#### Environment Variable Naming Convention
+
+Convert JSON paths to environment variables using double underscores (`__`) as separators:
+
+- `Namespace` → `Namespace`
+- `Environment` → `Environment`
+- `NatsUrl` → `NatsUrl`
+- `DLQStream:NumReplicas` → `DLQStream__NumReplicas`
+- `DLQStream:MaxAgeDays` → `DLQStream__MaxAgeDays`
+
+#### Docker
+
+```bash
+docker run -d \
+  --name dlq-service \
+  -e DOTNET_ENVIRONMENT=Production \
+  -e NatsUrl=nats://your-nats-server:4222 \
+  -e Namespace=YourNamespace \
+  -e Environment=production \
+  -e DLQStream__NumReplicas=3 \
+  -e DLQStream__MaxAgeDays=365 \
+  -e DLQStream__AllowUpdateStream=false \
+  ghcr.io/sebfia/dlqservice:latest
+```
+
+#### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  dlq-service:
+    image: ghcr.io/sebfia/dlqservice:latest
+    environment:
+      DOTNET_ENVIRONMENT: Production
+      NatsUrl: nats://nats:4222
+      Namespace: Mercator
+      Environment: production
+      DLQStream__NumReplicas: "3"
+      DLQStream__Retention: Limits
+      DLQStream__Storage: File
+      DLQStream__Compression: S2
+      DLQStream__MaxAgeDays: "365"
+      DLQStream__AllowUpdateStream: "false"
+    depends_on:
+      - nats
+    restart: unless-stopped
+```
+
+#### Kubernetes
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dlq-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dlq-service
+  template:
+    metadata:
+      labels:
+        app: dlq-service
+    spec:
+      containers:
+      - name: dlq-service
+        image: ghcr.io/sebfia/dlqservice:latest
+        env:
+        - name: DOTNET_ENVIRONMENT
+          value: "Production"
+        - name: NatsUrl
+          value: "nats://nats.nats-system.svc.cluster.local:4222"
+        - name: Namespace
+          value: "Mercator"
+        - name: Environment
+          value: "production"
+        - name: DLQStream__NumReplicas
+          value: "3"
+        - name: DLQStream__Retention
+          value: "Limits"
+        - name: DLQStream__Storage
+          value: "File"
+        - name: DLQStream__Compression
+          value: "S2"
+        - name: DLQStream__MaxAgeDays
+          value: "365"
+        - name: DLQStream__AllowUpdateStream
+          value: "false"
+```
+
+**Using ConfigMaps in Kubernetes:**
+
+Option 1: Using `envFrom` to inject ConfigMap as environment variables:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dlq-service-config
+data:
+  NatsUrl: "nats://nats.nats-system.svc.cluster.local:4222"
+  Namespace: "Mercator"
+  Environment: "production"
+  DLQStream__NumReplicas: "3"
+  DLQStream__MaxAgeDays: "365"
+  DLQStream__AllowUpdateStream: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dlq-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dlq-service
+  template:
+    metadata:
+      labels:
+        app: dlq-service
+    spec:
+      containers:
+      - name: dlq-service
+        image: ghcr.io/sebfia/dlqservice:latest
+        env:
+        - name: DOTNET_ENVIRONMENT
+          value: "Production"
+        envFrom:
+        - configMapRef:
+            name: dlq-service-config
+```
+
+Option 2: Mounting ConfigMap as `appsettings.json` file:
+
+This approach mounts a ConfigMap containing a complete JSON configuration file directly into the application directory, allowing you to manage configuration in a more structured way without using environment variables.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dlq-service-appsettings
+data:
+  appsettings.json: |
+    {
+      "Namespace": "Mercator",
+      "Environment": "production",
+      "NatsUrl": "nats://nats.nats-system.svc.cluster.local:4222",
+      "DLQStream": {
+        "NumReplicas": "3",
+        "Retention": "Limits",
+        "Storage": "File",
+        "NoAck": "false",
+        "Compression": "S2",
+        "MaxAgeDays": "365",
+        "Discard": "Old",
+        "AllowDirect": "true",
+        "DuplicateWindowMinutes": "2.0",
+        "MaxMsgs": "-1",
+        "MaxBytes": "-1",
+        "MaxMsgSize": "-1",
+        "MaxConsumers": "-1",
+        "AllowUpdateStream": "false"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dlq-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dlq-service
+  template:
+    metadata:
+      labels:
+        app: dlq-service
+    spec:
+      containers:
+      - name: dlq-service
+        image: ghcr.io/sebfia/dlqservice:latest
+        env:
+        - name: DOTNET_ENVIRONMENT
+          value: "Production"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/appsettings.json
+          subPath: appsettings.json
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: dlq-service-appsettings
+```
+
+**Key points when mounting as a file:**
+- The `volumeMounts.mountPath` is set to `/app/appsettings.json` (the application directory in the Docker image)
+- Using `subPath: appsettings.json` ensures only the specific file is mounted, not the entire directory
+- The ConfigMap data key must match the `subPath` value
+- This file will be loaded automatically by .NET's configuration system alongside `appsettings.Production.json`
+- Configuration precedence: `appsettings.json` < `appsettings.Production.json` < environment variables
+- To override the production settings file entirely, mount to `/app/appsettings.Production.json` instead
+
 ### Configuration Options
 
 #### General Settings
@@ -285,7 +494,7 @@ docker pull ghcr.io/sebfia/dlqservice:0.6.2
 docker pull ghcr.io/sebfia/dlqservice:<git-sha>
 ```
 
-Run the image:
+Run the image (see [Configuration via Environment Variables](#configuration-via-environment-variables) for complete examples):
 
 ```bash
 docker run -d \
@@ -294,6 +503,8 @@ docker run -d \
   -e NatsUrl=nats://your-nats-server:4222 \
   -e Namespace=YourNamespace \
   -e Environment=production \
+  -e DLQStream__NumReplicas=3 \
+  -e DLQStream__AllowUpdateStream=false \
   ghcr.io/sebfia/dlqservice:latest
 ```
 
