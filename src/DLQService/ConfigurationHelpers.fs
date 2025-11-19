@@ -74,8 +74,10 @@ let inline tryParseFloat (str: string) =
 let inline isRunningInDocker() =
     File.Exists("/.dockerenv") ||
     (File.Exists("/proc/1/cgroup") &&
-     let content = File.ReadAllText("/proc/1/cgroup")
-     content.Contains("docker") || content.Contains("kubepods"))
+     (try
+         let content = File.ReadAllText("/proc/1/cgroup")
+         content.Contains("docker") || content.Contains("kubepods")
+      with _ -> false))
 
 // "/Users/sebastian/Documents/blobs" |> expandTemplate
 // "{Docs}/blobs" |> expandEnvironmentFolderIfNecessary
