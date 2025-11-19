@@ -167,7 +167,7 @@ module DLQStreamConfig =
         {
             NumReplicas = 
                 getConfigValue "DLQStream:NumReplicas"
-                |> Option.map (Config.intParseWithDefault 1)
+                |> Option.bind Config.tryParseInt
                 |> Option.defaultValue 1
             
             Retention = 
@@ -191,7 +191,7 @@ module DLQStreamConfig =
             
             NoAck = 
                 getConfigValue "DLQStream:NoAck"
-                |> Option.map (Config.boolParseWithDefault false)
+                |> Option.bind Config.tryParseBool
                 |> Option.defaultValue false
             
             Compression = 
@@ -201,12 +201,13 @@ module DLQStreamConfig =
                     | "none" -> Some StreamConfigCompression.None
                     | "s2" -> Some StreamConfigCompression.S2
                     | _ -> None)
-                |> Option.defaultValue StreamConfigCompression.S2
+                |> Option.defaultValue StreamConfigCompression.None
             
             MaxAge = 
                 getConfigValue "DLQStream:MaxAgeDays"
-                |> Option.map (Config.timeSpanDaysParseWithDefault (TimeSpan.FromDays 365.))
-                |> Option.defaultValue (TimeSpan.FromDays 365.)
+                |> Option.bind Config.tryParseFloat
+                |> Option.map TimeSpan.FromDays
+                |> Option.defaultValue TimeSpan.Zero
             
             Discard = 
                 getConfigValue "DLQStream:Discard"
@@ -219,37 +220,38 @@ module DLQStreamConfig =
             
             AllowDirect = 
                 getConfigValue "DLQStream:AllowDirect"
-                |> Option.map (Config.boolParseWithDefault true)
+                |> Option.bind Config.tryParseBool
                 |> Option.defaultValue true
             
             DuplicateWindow = 
                 getConfigValue "DLQStream:DuplicateWindowMinutes"
-                |> Option.map (Config.timeSpanMinutesParseWithDefault (TimeSpan.FromMinutes 2.0))
+                |> Option.bind Config.tryParseFloat
+                |> Option.map TimeSpan.FromMinutes
                 |> Option.defaultValue (TimeSpan.FromMinutes 2.0)
             
             MaxMsgs = 
                 getConfigValue "DLQStream:MaxMsgs"
-                |> Option.map (Config.int64ParseWithDefault -1L)
+                |> Option.bind Config.tryParseInt64
                 |> Option.defaultValue -1L
             
             MaxBytes = 
                 getConfigValue "DLQStream:MaxBytes"
-                |> Option.map (Config.int64ParseWithDefault -1L)
+                |> Option.bind Config.tryParseInt64
                 |> Option.defaultValue -1L
             
             MaxMsgSize = 
                 getConfigValue "DLQStream:MaxMsgSize"
-                |> Option.map (Config.intParseWithDefault -1)
+                |> Option.bind Config.tryParseInt
                 |> Option.defaultValue -1
             
             MaxConsumers = 
                 getConfigValue "DLQStream:MaxConsumers"
-                |> Option.map (Config.intParseWithDefault -1)
+                |> Option.bind Config.tryParseInt
                 |> Option.defaultValue -1
             
             AllowUpdateStream = 
                 getConfigValue "DLQStream:AllowUpdateStream"
-                |> Option.map (Config.boolParseWithDefault true)
+                |> Option.bind Config.tryParseBool
                 |> Option.defaultValue true
         }
 
