@@ -21,8 +21,12 @@ let inline configureNats (sp: IServiceProvider) =
     try
         logger.LogInformation "Setting up NATS connection..."
 
+        let defaultNatsUrl = 
+            if Config.isRunningInDocker() then "nats://nats:4222"
+            else "nats://localhost:4222"
+
         let opts = NatsOpts(
-            Url = (config |> Config.tryGetConfigValue "NatsUrl" |> Option.defaultValue "nats://localhost:4222"),
+            Url = (config |> Config.tryGetConfigValue "NatsUrl" |> Option.defaultValue defaultNatsUrl),
             Name = DLQService.Name,
             LoggerFactory = loggerFactory
         )

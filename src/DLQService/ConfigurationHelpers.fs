@@ -75,6 +75,11 @@ let inline timeSpanMinutesParseWithDefault defaultValue (str: string) =
         | (true, minutes) -> TimeSpan.FromMinutes minutes
         | _ -> defaultValue
 
+let inline isRunningInDocker() =
+    File.Exists("/.dockerenv") ||
+    (File.Exists("/proc/1/cgroup") &&
+     let content = File.ReadAllText("/proc/1/cgroup")
+     content.Contains("docker") || content.Contains("kubepods"))
 
 // "/Users/sebastian/Documents/blobs" |> expandTemplate
 // "{Docs}/blobs" |> expandEnvironmentFolderIfNecessary

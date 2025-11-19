@@ -48,9 +48,6 @@ WORKDIR /app
 
 COPY --from=build /app/publish ./
 
-# Note: appsettings.Production.json is already included in the publish output
-# It will be automatically loaded by .NET when DOTNET_ENVIRONMENT=Production (set above)
-
 RUN if ! getent group app >/dev/null; then addgroup -S app; fi \
     && if ! getent passwd app >/dev/null; then adduser -S -G app app; fi
 USER app
