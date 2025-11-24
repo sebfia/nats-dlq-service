@@ -9,7 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include=".\Properties\DLQService.fs" />
-    <Compile Include="ConfigurationHelpers.fs" />
+    <Compile Include="..\toolkit\ConfigurationHelpers.fs" />
     <Compile Include="Operators.fs" />
     <Compile Include="DLQProcessor.fs" />
     <Compile Include="Program.fs" />
