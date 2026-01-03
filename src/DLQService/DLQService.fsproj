@@ -10,9 +10,18 @@
   <ItemGroup>
     <Compile Include=".\Properties\DLQService.fs" />
     <Compile Include="..\toolkit\ConfigurationHelpers.fs" />
+    <Compile Include="..\toolkit\ServiceHealthStore.fs" />
+    <Compile Include="..\toolkit\ServiceHealthCheck.fs" />
+    <Compile Include="..\toolkit\HealthCheckServer.fs" />
+    <Compile Include="ServiceDefaults.fs" />
     <Compile Include="Operators.fs" />
     <Compile Include="DLQProcessor.fs" />
     <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- ASP.NET Core is available as framework reference in .NET 10 -->
+    <!-- Note: Microsoft.Extensions.Diagnostics.HealthChecks is managed by Paket -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

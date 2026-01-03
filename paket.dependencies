@@ -2,7 +2,6 @@ group DLQService
     
     source https://api.nuget.org/v3/index.json
     storage: none
-    framework: net10.0
 
     nuget FSharp.Core
     nuget Microsoft.Extensions.Hosting
@@ -20,3 +19,4 @@ group DLQService
     nuget Microsoft.Extensions.FileSystemGlobbing
     nuget Microsoft.Extensions.Options
     nuget Microsoft.Extensions.Primitives
+    nuget Microsoft.Extensions.Diagnostics.HealthChecks
