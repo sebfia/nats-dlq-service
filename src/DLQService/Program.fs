@@ -97,6 +97,9 @@ let main args =
     builder.Logging.AddFilter("NATS.Client.Core.Internal.NatsReadProtocolProcessor", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("NATS.Client.Core.NatsConnection", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("NATS.Client.Core.Commands.CommandWriter", LogLevel.Information) |> ignore
+    // Suppress health check Debug logs in production (they run every 5-30 seconds)
+    builder.Logging.AddFilter("Mercator.HealthChecks.ServiceHealthCheck", LogLevel.Information) |> ignore
+    builder.Logging.AddFilter("Mercator.HealthChecks.LivenessHealthCheck", LogLevel.Information) |> ignore
     builder.Logging.AddNLog() |> ignore
 
     // Register services
