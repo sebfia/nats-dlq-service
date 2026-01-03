@@ -9,6 +9,7 @@ on:
       - src/DLQService/*.fs
       - src/DLQService/Dockerfile
       - global.json
+      - paket.dependencies
       - .github/workflows/build.yml
   workflow_dispatch:
 
