@@ -44,11 +44,16 @@ RUN dotnet publish DLQService.fsproj \
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine
 
 ENV DOTNET_EnableDiagnostics=0 \
-    DOTNET_ENVIRONMENT=Production
+    DOTNET_ENVIRONMENT=Production \
+    # HealthCheckServer binds to localhost by default; in containers we must bind to all interfaces
+    HEALTHCHECK_URLS=http://0.0.0.0:8080
 
 WORKDIR /app
 
 COPY --from=build /app/publish ./
+
+# Health check endpoints (see Program.fs / HealthCheckServer.fs)
+EXPOSE 8080
 
 RUN if ! getent group app >/dev/null; then addgroup -S app; fi \
     && if ! getent passwd app >/dev/null; then adduser -S -G app app; fi
