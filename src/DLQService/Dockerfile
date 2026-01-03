@@ -28,13 +28,15 @@ RUN echo "Build ID: ${BUILD_ID}, Git SHA: ${GIT_SHA}"
 
 # Build with no cache and force clean rebuild
 # Disable incremental compilation and use single-threaded compilation to avoid state machine issues
+# Note: PublishSingleFile bundles ASP.NET Core framework assemblies, so runtime-deps is sufficient
 RUN dotnet publish DLQService.fsproj \
     -c Release \
     -o /app/publish \
     -p:PublishTrimmed=true \
     -p:PublishSingleFile=true \
     -p:InvariantGlobalization=true \
-    -p:ReadyToRun=true
+    -p:ReadyToRun=true \
+    -p:IncludeNativeLibrariesForSelfExtract=true
 
 ################
 # Runtime stage#

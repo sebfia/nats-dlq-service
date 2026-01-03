@@ -6,3 +6,4 @@ Microsoft.Extensions.Logging
 Microsoft.Extensions.Hosting
 NATS.Net
 Microsoft.Extensions.Configuration.Abstractions
+Microsoft.Extensions.Diagnostics.HealthChecks
