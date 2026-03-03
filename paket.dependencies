@@ -3,20 +3,20 @@ group DLQService
     source https://api.nuget.org/v3/index.json
     storage: none
 
-    nuget FSharp.Core
-    nuget Microsoft.Extensions.Hosting
-    nuget Microsoft.Extensions.Logging
-    nuget Microsoft.Extensions.Logging.Abstractions
-    nuget NATS.Net
-    nuget NLog
-    nuget NLog.Extensions.Logging
-    nuget Microsoft.Extensions.Configuration.Abstractions
-    nuget Microsoft.Extensions.DependencyInjection
-    nuget Microsoft.Extensions.DependencyInjection.Abstractions
-    nuget Microsoft.Extensions.Diagnostics.Abstractions
-    nuget Microsoft.Extensions.FileProviders.Abstractions
-    nuget Microsoft.Extensions.FileProviders.Physical
-    nuget Microsoft.Extensions.FileSystemGlobbing
-    nuget Microsoft.Extensions.Options
-    nuget Microsoft.Extensions.Primitives
-    nuget Microsoft.Extensions.Diagnostics.HealthChecks
+    nuget FSharp.Core ~> 10.0
+    nuget Microsoft.Extensions.Hosting ~> 10.0
+    nuget Microsoft.Extensions.Logging ~> 10.0
+    nuget Microsoft.Extensions.Logging.Abstractions ~> 10.0
+    nuget NATS.Net ~> 2.7
+    nuget NLog ~> 6.0
+    nuget NLog.Extensions.Logging ~> 6.1
+    nuget Microsoft.Extensions.Configuration.Abstractions ~> 10.0
+    nuget Microsoft.Extensions.DependencyInjection ~> 10.0
+    nuget Microsoft.Extensions.DependencyInjection.Abstractions ~> 10.0
+    nuget Microsoft.Extensions.Diagnostics.Abstractions ~> 10.0
+    nuget Microsoft.Extensions.FileProviders.Abstractions ~> 10.0
+    nuget Microsoft.Extensions.FileProviders.Physical ~> 10.0
+    nuget Microsoft.Extensions.FileSystemGlobbing ~> 10.0
+    nuget Microsoft.Extensions.Options ~> 10.0
+    nuget Microsoft.Extensions.Primitives ~> 10.0
+    nuget Microsoft.Extensions.Diagnostics.HealthChecks ~> 10.0
