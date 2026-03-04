@@ -83,7 +83,7 @@ let main args =
     let env = builder.Environment.EnvironmentName
     if env = "Production" then
         config.AddTarget(jsonTarget)
-        config.AddRuleForAllLevels(jsonTarget)
+        config.AddRule(LogLevel.Info, LogLevel.Fatal, jsonTarget)
         LogManager.Configuration <- config
     else
         config.AddTarget(devTarget)
@@ -92,7 +92,8 @@ let main args =
 
     // NOTE: Don't clear providers! ServiceDefaults added OpenTelemetry logging for Aspire Dashboard.
     // Just add NLog alongside it.
-    builder.Logging.SetMinimumLevel(LogLevel.Trace) |> ignore
+    let minLogLevel = if env = "Production" then LogLevel.Information else LogLevel.Debug
+    builder.Logging.SetMinimumLevel(minLogLevel) |> ignore
     // Reduce noisy DEBUG shutdown logs from NATS internals
     builder.Logging.AddFilter("NATS.Client.Core.Internal.NatsReadProtocolProcessor", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("NATS.Client.Core.NatsConnection", LogLevel.Information) |> ignore
@@ -100,7 +101,8 @@ let main args =
     // Suppress health check Debug logs in production (they run every 5-30 seconds)
     builder.Logging.AddFilter("Mercator.HealthChecks.ServiceHealthCheck", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("Mercator.HealthChecks.LivenessHealthCheck", LogLevel.Information) |> ignore
-    builder.Logging.AddNLog() |> ignore
+    builder.Logging.AddFilter("Microsoft.Extensions.Diagnostics.HealthChecks", LogLevel.Warning) |> ignore
+    builder.Logging.AddNLog(NLogProviderOptions(RemoveLoggerFactoryFilter = false)) |> ignore
 
     // Register services
     builder.Services.AddSingleton<INatsClient, NatsClient> configureNats |> ignore
