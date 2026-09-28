@@ -1,16 +1,25 @@
 name: build-dlq-service
 
+# Pull requests run the container smoke test only. A push to main (or a manual
+# run on main) runs it too and, only when it passes, builds, pushes and tags
+# the next release.
 on:
   push:
     branches:
       - main
-    paths:
-      - src/DLQService/*.fsproj
-      - src/DLQService/*.fs
-      - src/DLQService/Dockerfile
+    paths: &paths
+      - src/DLQService/**
+      - src/toolkit
       - global.json
       - paket.dependencies
+      - paket.lock
+      - .paket/**
+      - .config/dotnet-tools.json
       - .github/workflows/build.yml
+  pull_request:
+    branches:
+      - main
+    paths: *paths
   workflow_dispatch:
 
 # permissions are needed if pushing to ghcr.io
@@ -19,9 +28,75 @@ permissions:
   contents: write
 
 jobs:
+  # Builds the release image (trimmed, single-file, on runtime-deps) and
+  # starts it against NATS with a prober already in its network namespace,
+  # hitting the probe port before and while the service starts, as the
+  # kubelet can (Mercator ADR-0024). The service must come up and answer
+  # /alive anyway; a release cannot ship an image that fails this.
+  container-smoke:
+    name: Container startup smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PROBE_URL: http://127.0.0.1:8080/alive
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Build image (local only)
+        run: docker build -f src/DLQService/Dockerfile -t smoke:local .
+
+      - name: Start NATS, the prober and the service
+        run: |
+          set -euo pipefail
+          docker network create smoke
+          docker run -d --name nats --network smoke nats:latest -js
+          # holder owns the network namespace that prober and service share,
+          # so the prober reaches 127.0.0.1:8080 before the service exists.
+          docker run -d --name holder --network smoke busybox:stable sleep 3600
+          docker run -d --name prober --network container:holder -e PROBE_URL busybox:stable \
+            sh -c 'while true; do wget -q -O /dev/null -T 1 "$PROBE_URL" 2>/dev/null; done'
+          sleep 1
+          # The image's own Production profile; the DLQ stream defaults to
+          # one replica, which the one-node smoke NATS accepts.
+          docker run -d --name service --network container:holder \
+            -e ConnectionStrings__nats=nats://nats:4222 \
+            smoke:local
+
+      - name: Wait for the probe
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if ! docker inspect -f '{{.State.Running}}' service 2>/dev/null | grep -q true; then
+              echo "::error::The container exited before /alive answered."
+              exit 1
+            fi
+            if docker exec prober wget -q -O /dev/null -T 2 "$PROBE_URL"; then
+              echo "/alive answered after $attempt attempt(s)."
+              docker exec prober wget -q -O - -T 2 http://127.0.0.1:8080/health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::/alive did not answer within 120 seconds."
+          exit 1
+
+      - name: Show logs and clean up
+        if: always()
+        run: |
+          docker logs service 2>&1 || true
+          docker rm -f service prober holder nats 2>/dev/null || true
+          docker network rm smoke 2>/dev/null || true
+
   build-dlq-service:
 
     name: Build DLQ Service
+
+    needs: container-smoke
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
     

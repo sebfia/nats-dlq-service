@@ -43,16 +43,17 @@ RUN dotnet publish DLQService.fsproj \
 ################
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-alpine
 
+# HEALTHCHECK_URLS is deliberately not set: the toolkit's probe listener
+# detects DOTNET_RUNNING_IN_CONTAINER / KUBERNETES_SERVICE_HOST and binds
+# http://+:8080 on its own. Set it only to override the bind address.
 ENV DOTNET_EnableDiagnostics=0 \
-    DOTNET_ENVIRONMENT=Production \
-    # HealthCheckServer binds to localhost by default; in containers we must bind to all interfaces
-    HEALTHCHECK_URLS=http://0.0.0.0:8080
+    DOTNET_ENVIRONMENT=Production
 
 WORKDIR /app
 
 COPY --from=build /app/publish ./
 
-# Health check endpoints (see Program.fs / HealthCheckServer.fs)
+# Health probes /alive and /health (see Program.fs / toolkit HealthProbes.fs)
 EXPOSE 8080
 
 RUN if ! getent group app >/dev/null; then addgroup -S app; fi \

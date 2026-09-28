@@ -114,12 +114,13 @@ let main args =
 
     // ✨ Add health checks based on actual operational errors
     builder.Services.AddHealthChecks()
-        .AddLivenessHealthCheck()      // Checks for non-resolvable errors (affects /alive)
-        .AddServiceHealthCheck()        // Checks all errors (affects /health)
+        .AddLivenessHealthCheck(DLQService.Name)   // Non-resolvable errors fail /alive
+        .AddServiceHealthCheck(DLQService.Name)    // Any recorded error fails /health
         |> ignore
 
-    // ✨ Add health check HTTP server on port 8080
-    builder.Services.AddHealthCheckServer(8080) |> ignore
+    // Kubernetes probes (/alive, /health) on port 8080: toolkit HealthProbes,
+    // a probe-only Kestrel listener beside this generic host.
+    builder.Services.AddHealthProbes(DLQService.Name) |> ignore
 
     let app = builder.Build()
     app.Run()

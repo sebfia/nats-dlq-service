@@ -3,24 +3,31 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <!-- Suppress warnings for packages that are now part of .NET 10 framework -->
+    <!-- NU1510: Paket writes transitive Microsoft.Extensions.* packages
+         (via NATS.Net and NLog.Extensions.Logging) as PackageReferences; the
+         framework already provides them. -->
     <NoWarn>$(NoWarn);NU1510</NoWarn>
-    <!-- Force clean rebuild to avoid compiler state machine bugs -->
+    <!-- Same policy as the Mercator monorepo: unused bindings warn, and every
+         warning is an error unless it is discussed and suppressed by code. -->
+    <WarnOn>3390;1182</WarnOn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include=".\Properties\DLQService.fs" />
     <Compile Include="..\toolkit\ConfigurationHelpers.fs" />
     <Compile Include="..\toolkit\ServiceHealthStore.fs" />
     <Compile Include="..\toolkit\ServiceHealthCheck.fs" />
-    <Compile Include="..\toolkit\HealthCheckServer.fs" />
+    <Compile Include="..\toolkit\HealthProbes.fs" />
     <Compile Include="ServiceDefaults.fs" />
     <Compile Include="Operators.fs" />
     <Compile Include="DLQProcessor.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
-    <!-- ASP.NET Core is available as framework reference in .NET 10 -->
-    <!-- Note: Microsoft.Extensions.Diagnostics.HealthChecks is managed by Paket -->
+    <!-- The toolkit's HealthProbes.fs serves /alive and /health on a
+         probe-only Kestrel listener (Mercator ADR-0024). The Microsoft.Extensions.*
+         hosting, logging, configuration and health-check assemblies come from
+         this framework too, so Paket does not list them. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
