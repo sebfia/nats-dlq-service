@@ -60,13 +60,15 @@ jobs:
           docker run -d --name prober --network container:holder -e PROBE_URL busybox:stable \
             sh -c 'while true; do wget -q -O /dev/null -T 1 "$PROBE_URL" 2>/dev/null; done'
           sleep 1
-          # The image's own Production profile; the DLQ stream defaults to
-          # one replica, which the one-node smoke NATS accepts.
+          # The image's own Production profile (appsettings.Production.json),
+          # with one override: it requests three stream replicas, which a
+          # one-node smoke NATS correctly rejects.
           docker run -d --name service --network container:holder \
             -e ConnectionStrings__nats=nats://nats:4222 \
+            -e DLQStream__NumReplicas=1 \
             smoke:local
 
-      - name: Wait for the probe
+      - name: Wait for the probe and the DLQ stream
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
@@ -74,14 +76,25 @@ jobs:
               echo "::error::The container exited before /alive answered."
               exit 1
             fi
-            if docker exec prober wget -q -O /dev/null -T 2 "$PROBE_URL"; then
-              echo "/alive answered after $attempt attempt(s)."
+            # Logs go through a variable: `docker logs | grep -q` fails under
+            # pipefail when grep exits early and docker logs gets SIGPIPE.
+            logs=$(docker logs service 2>&1)
+            if docker exec prober wget -q -O /dev/null -T 2 "$PROBE_URL" &&
+               grep -q 'DLQ stream created or updated successfully' <<<"$logs"; then
+              echo "/alive answered and the DLQ stream is up after $attempt attempt(s)."
               docker exec prober wget -q -O - -T 2 http://127.0.0.1:8080/health
+              echo
+              # The stream must have been set up from the packaged Production
+              # settings, not from the code defaults.
+              if ! grep -q 'Compression=S2, MaxAgeDays=365, AllowUpdateStream=False' <<<"$logs"; then
+                echo "::error::The DLQ stream was not configured from appsettings.Production.json."
+                exit 1
+              fi
               exit 0
             fi
             sleep 2
           done
-          echo "::error::/alive did not answer within 120 seconds."
+          echo "::error::/alive or the DLQ stream did not come up within 120 seconds."
           exit 1
 
       - name: Show logs and clean up

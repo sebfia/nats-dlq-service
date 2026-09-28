@@ -24,6 +24,13 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Published next to the binary (the host's content root, /app in the
+         image). Without it the Production profile falls back to the code
+         defaults: one replica, no compression, no max age and
+         AllowUpdateStream=true, which rewrites the DLQ stream on every start. -->
+    <Content Include="appsettings.Production.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- The toolkit's HealthProbes.fs serves /alive and /health on a
          probe-only Kestrel listener (Mercator ADR-0024). The Microsoft.Extensions.*
          hosting, logging, configuration and health-check assemblies come from
