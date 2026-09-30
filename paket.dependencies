@@ -7,3 +7,6 @@ group DLQService
     nuget NATS.Net ~> 3.2
     nuget NLog ~> 6.2
     nuget NLog.Extensions.Logging ~> 6.2
+    nuget OpenTelemetry.Extensions.Hosting ~> 1.18
+    nuget OpenTelemetry.Exporter.OpenTelemetryProtocol ~> 1.18
+    nuget OpenTelemetry.Instrumentation.Runtime ~> 1.18

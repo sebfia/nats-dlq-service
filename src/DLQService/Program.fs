@@ -10,6 +10,10 @@ open NLog.Layouts
 open Microsoft.Extensions.Configuration
 open NATS.Client.Core
 open NATS.Net
+open OpenTelemetry
+open OpenTelemetry.Logs
+open OpenTelemetry.Metrics
+open OpenTelemetry.Trace
 open DLQProcessor
 open DLQService
 open Mercator.HealthChecks
@@ -124,6 +128,23 @@ let main args =
         builder.Logging.AddFilter("Microsoft", LogLevel.Warning) |> ignore
         builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information) |> ignore
     builder.Logging.AddNLog(NLogProviderOptions(RemoveLoggerFactoryFilter = false)) |> ignore
+
+    // OpenTelemetry (Mercator ADR-0013): logs, metrics and traces over OTLP to the
+    // collector, which fans out to Loki, Prometheus and Tempo. Nothing is exported
+    // unless OTEL_EXPORTER_OTLP_ENDPOINT is set; the chart sets it together with
+    // OTEL_SERVICE_NAME when global.observability is enabled. Log records pass the
+    // same category filters as NLog above.
+    builder.Logging.AddOpenTelemetry(fun options ->
+        options.IncludeFormattedMessage <- true
+        options.IncludeScopes <- true) |> ignore
+    let openTelemetry =
+        builder.Services.AddOpenTelemetry()
+            .WithMetrics(fun metrics ->
+                metrics.AddRuntimeInstrumentation().AddMeter(Telemetry.Name) |> ignore)
+            .WithTracing(fun tracing ->
+                tracing.AddSource(Telemetry.Name) |> ignore)
+    if not (String.IsNullOrWhiteSpace builder.Configuration.["OTEL_EXPORTER_OTLP_ENDPOINT"]) then
+        openTelemetry.UseOtlpExporter() |> ignore
 
     // Register services
     builder.Services.AddSingleton<INatsClient, NatsClient> configureNats |> ignore

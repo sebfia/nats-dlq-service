@@ -457,6 +457,22 @@ let consumerConfig = ConsumerConfig(
 - **Payload handling**: When an advisory event is received, the service fetches the original message from the stream, validates its subject matches the configured namespace/environment pattern, and if valid, republishes the exact payload into the DLQ stream alongside the metadata.
 - The service only processes messages whose subjects match the configured namespace and environment pattern (`{namespace}.{env}.>`), preventing cross-contamination.
 
+## Observability (OpenTelemetry)
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the service exports logs, metrics and traces over OTLP (gRPC). The service name and resource attributes come from `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`. Without the endpoint nothing is exported. The Mercator Helm chart sets all three when `global.observability.enabled` is true.
+
+- **Logs**: the same events as stdout, with the same level filters.
+- **Traces**: one `dlq advisory` span (kind `Consumer`) per advisory, with `dlq.advisory.type`, `dlq.source.stream`, `dlq.source.consumer`, `dlq.source.sequence`, `dlq.deliveries` and `dlq.outcome`. Spans are marked as errors when the advisory is retried, given up or unreadable. When the original message carries W3C `traceparent` headers (as written by NATS.Net's own tracing), the span links to that trace.
+- **Metrics** (meter `DLQService`, plus .NET runtime metrics):
+
+  | Instrument | Type | Tags |
+  |---|---|---|
+  | `dlq.advisories` | counter | `dlq.outcome` (`published`, `filtered`, `not_found`, `retried`, `given_up`, `unreadable`, `skipped_own_stream`), `dlq.advisory.type` (`terminated`, `max_deliveries`), `dlq.source.stream` |
+  | `dlq.advisory.duration` | histogram (s) | same as above |
+  | `dlq.advisories.backlog` | gauge | `dlq.state` (`pending`, `ack_pending`): the advisory consumer's backlog, refreshed every 30 s |
+
+  In Prometheus, `rate(dlq_advisories_total{dlq_outcome="published"}[5m])` is the dead-letter rate. `dlq_advisories_total{dlq_outcome="given_up"}` counts messages that could not be dead-lettered.
+
 ## Troubleshooting
 
 - No DLQ entries appear:

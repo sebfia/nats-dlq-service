@@ -1,6 +1,7 @@
 module DLQProcessor
 
 open System
+open System.Diagnostics
 open System.Threading
 open System.Threading.Tasks
 open System.Threading.Channels
@@ -132,6 +133,9 @@ module TerminatedAdvisory =
                             | colonIdx ->
                                 let key = line.Substring(0, colonIdx).Trim()
                                 let value = line.Substring(colonIdx + 1).Trim()
+                                // Join the original trace, if its producer propagated one
+                                if key.Equals("traceparent", StringComparison.OrdinalIgnoreCase) then
+                                    Telemetry.linkOriginalTrace value
                                 headers.Add($"X-DLQ-{key}", value))
                     
                     // Publish to DLQ with the headers we've built. The message id makes a
@@ -431,36 +435,62 @@ let inline consumeAdvisories
             logger.LogInformation("Consuming advisories from '{Stream}' with durable consumer '{Consumer}'.", advisoryStream, consumerName)
 
             let handle (workerId: int) (msg: INatsJSMsg<ReadOnlyMemory<byte>>) = task {
+                // One span per advisory; the DLQ publish and the JetStream lookups run inside it.
+                use activity = Telemetry.activitySource.StartActivity("dlq advisory", ActivityKind.Consumer)
+                let started = Stopwatch.GetTimestamp()
+                let advisoryKind = Telemetry.advisoryType msg.Subject
                 let deliveries = msg.Metadata |> Option.ofNullable |> Option.map (fun m -> int64 m.NumDelivered) |> Option.defaultValue 1L
-                match (try Ok (TerminatedAdvisory.parse msg.Data) with ex -> Error ex.Message) with
-                | Error err ->
-                    logger.LogError("[Worker {Worker}] Unreadable advisory on {Subject}, skipped: {Error}", workerId, msg.Subject, err)
-                    do! msg.AckAsync(cancellationToken = ct)
-                | Ok advisory when advisory.Stream = dlqStream || advisory.Stream = advisoryStream ->
-                    // A DLQ consumer, or this service's own consumer, gave up on a
-                    // message: dead-lettering it again would loop.
-                    logger.LogWarning("[Worker {Worker}] Skipped advisory about stream '{Stream}' (sequence {Seq}): it is the DLQ's own stream.", workerId, advisory.Stream, advisory.StreamSeq)
-                    do! msg.AckAsync(cancellationToken = ct)
-                | Ok advisory ->
-                    let! result = TerminatedAdvisory.handleMessage jsCtx (subjectFor' advisory) expectedSubjectPrefix advisory ct
-                    match result with
-                    | PublishedToDLQ ack ->
-                        logger.LogInformation $"[Worker {workerId}] ✅ Published message to DLQ from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq} → DLQ sequence {ack.Seq}"
-                    | FilteredOut (msgSubject, expectedPrefix) ->
-                        logger.LogDebug $"[Worker {workerId}] ⏩ Filtered out message from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq}: subject '{msgSubject}' does not match expected prefix '{expectedPrefix}'"
-                    | MessageNotFound (stream, seq) ->
-                        logger.LogWarning $"[Worker {workerId}] ⚠️ Original message not found in stream '{stream}' at sequence {seq}"
-                    | PublishError _ | ProcessingError _ -> ()
-
-                    match AdvisoryOutcome.ofResult result with
-                    | Done -> do! msg.AckAsync(cancellationToken = ct)
-                    | Retry reason when deliveries >= int64 AdvisoryMaxDeliver ->
-                        logger.LogError("[Worker {Worker}] ❌ Giving up on stream '{Stream}', consumer '{Consumer}', sequence {Seq} after {Deliveries} attempts; it is not in the DLQ: {Reason}", workerId, advisory.Stream, advisory.Consumer, advisory.StreamSeq, deliveries, reason)
+                let! sourceStream, outcome = task {
+                    match (try Ok (TerminatedAdvisory.parse msg.Data) with ex -> Error ex.Message) with
+                    | Error err ->
+                        logger.LogError("[Worker {Worker}] Unreadable advisory on {Subject}, skipped: {Error}", workerId, msg.Subject, err)
                         do! msg.AckAsync(cancellationToken = ct)
-                    | Retry reason ->
-                        let delay = retryDelay deliveries
-                        logger.LogWarning("[Worker {Worker}] Attempt {Deliveries} failed for stream '{Stream}', consumer '{Consumer}', sequence {Seq}; retrying in {Delay}: {Reason}", workerId, deliveries, advisory.Stream, advisory.Consumer, advisory.StreamSeq, delay, reason)
-                        do! msg.NakAsync(delay = delay, cancellationToken = ct)
+                        return "unknown", Telemetry.Unreadable
+                    | Ok advisory when advisory.Stream = dlqStream || advisory.Stream = advisoryStream ->
+                        // A DLQ consumer, or this service's own consumer, gave up on a
+                        // message: dead-lettering it again would loop.
+                        logger.LogWarning("[Worker {Worker}] Skipped advisory about stream '{Stream}' (sequence {Seq}): it is the DLQ's own stream.", workerId, advisory.Stream, advisory.StreamSeq)
+                        do! msg.AckAsync(cancellationToken = ct)
+                        return advisory.Stream, Telemetry.SkippedOwnStream
+                    | Ok advisory ->
+                        match Option.ofObj activity with
+                        | Some a ->
+                            a.SetTag("dlq.advisory.type", advisoryKind)
+                             .SetTag("dlq.source.stream", advisory.Stream)
+                             .SetTag("dlq.source.consumer", advisory.Consumer)
+                             .SetTag("dlq.source.sequence", int64 advisory.StreamSeq)
+                             .SetTag("dlq.deliveries", deliveries) |> ignore
+                        | None -> ()
+                        let! result = TerminatedAdvisory.handleMessage jsCtx (subjectFor' advisory) expectedSubjectPrefix advisory ct
+                        match result with
+                        | PublishedToDLQ ack ->
+                            logger.LogInformation $"[Worker {workerId}] ✅ Published message to DLQ from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq} → DLQ sequence {ack.Seq}"
+                        | FilteredOut (msgSubject, expectedPrefix) ->
+                            logger.LogDebug $"[Worker {workerId}] ⏩ Filtered out message from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq}: subject '{msgSubject}' does not match expected prefix '{expectedPrefix}'"
+                        | MessageNotFound (stream, seq) ->
+                            logger.LogWarning $"[Worker {workerId}] ⚠️ Original message not found in stream '{stream}' at sequence {seq}"
+                        | PublishError _ | ProcessingError _ -> ()
+
+                        match AdvisoryOutcome.ofResult result with
+                        | Done ->
+                            do! msg.AckAsync(cancellationToken = ct)
+                            let outcome =
+                                match result with
+                                | PublishedToDLQ _ -> Telemetry.Published
+                                | FilteredOut _ -> Telemetry.Filtered
+                                | _ -> Telemetry.NotFound
+                            return advisory.Stream, outcome
+                        | Retry reason when deliveries >= int64 AdvisoryMaxDeliver ->
+                            logger.LogError("[Worker {Worker}] ❌ Giving up on stream '{Stream}', consumer '{Consumer}', sequence {Seq} after {Deliveries} attempts; it is not in the DLQ: {Reason}", workerId, advisory.Stream, advisory.Consumer, advisory.StreamSeq, deliveries, reason)
+                            do! msg.AckAsync(cancellationToken = ct)
+                            return advisory.Stream, Telemetry.GivenUp
+                        | Retry reason ->
+                            let delay = retryDelay deliveries
+                            logger.LogWarning("[Worker {Worker}] Attempt {Deliveries} failed for stream '{Stream}', consumer '{Consumer}', sequence {Seq}; retrying in {Delay}: {Reason}", workerId, deliveries, advisory.Stream, advisory.Consumer, advisory.StreamSeq, delay, reason)
+                            do! msg.NakAsync(delay = delay, cancellationToken = ct)
+                            return advisory.Stream, Telemetry.Retried
+                }
+                Telemetry.record activity advisoryKind sourceStream outcome (Stopwatch.GetElapsedTime started)
             }
 
             /// One pass over the consumer: returns whether any advisory was handled, and
@@ -511,8 +541,21 @@ let inline consumeAdvisories
                     logger.LogInformation("Advisory worker {Worker} stopped.", workerId)
                 }
 
+            /// Keeps the dlq.advisories.backlog gauge current (consumer info, every 30 s).
+            let refreshBacklog : Task =
+                task {
+                    while not ct.IsCancellationRequested do
+                        try
+                            let! current = jsCtx.GetConsumerAsync(advisoryStream, consumerName, ct)
+                            Telemetry.recordBacklog (int64 current.Info.NumPending) current.Info.NumAckPending
+                        with
+                        | :? OperationCanceledException -> ()
+                        | ex -> logger.LogDebug(ex, "Could not read the advisory consumer's backlog.")
+                        try do! Task.Delay(TimeSpan.FromSeconds 30.0, ct) with :? OperationCanceledException -> ()
+                }
+
             let workerCount = Environment.ProcessorCount |> max 1 |> min 8
-            do! Task.WhenAll [| for i in 1 .. workerCount -> worker i |]
+            do! Task.WhenAll [| yield refreshBacklog; for i in 1 .. workerCount -> worker i |]
         }
 
 /// Constructs the DLQ subject for a given terminated advisory
