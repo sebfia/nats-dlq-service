@@ -5,6 +5,7 @@ open System.Threading.Tasks
 open NLog
 open NLog.Extensions.Logging
 open Microsoft.Extensions.Logging
+open Microsoft.Extensions.Logging.Console
 open NLog.Layouts
 open Microsoft.Extensions.Configuration
 open NATS.Client.Core
@@ -101,14 +102,28 @@ let main args =
     // Just add NLog alongside it.
     let minLogLevel = if env = "Production" then LogLevel.Information else LogLevel.Debug
     builder.Logging.SetMinimumLevel(minLogLevel) |> ignore
-    // Reduce noisy DEBUG shutdown logs from NATS internals
-    builder.Logging.AddFilter("NATS.Client.Core.Internal.NatsReadProtocolProcessor", LogLevel.Information) |> ignore
-    builder.Logging.AddFilter("NATS.Client.Core.NatsConnection", LogLevel.Information) |> ignore
-    builder.Logging.AddFilter("NATS.Client.Core.Commands.CommandWriter", LogLevel.Information) |> ignore
+    // Reduce noisy DEBUG shutdown logs from NATS internals (outside Production;
+    // there the whole NATS.Client category is raised to Warning below, and these
+    // more specific rules would override it back to Information).
+    if env <> "Production" then
+        builder.Logging.AddFilter("NATS.Client.Core.Internal.NatsReadProtocolProcessor", LogLevel.Information) |> ignore
+        builder.Logging.AddFilter("NATS.Client.Core.NatsConnection", LogLevel.Information) |> ignore
+        builder.Logging.AddFilter("NATS.Client.Core.Commands.CommandWriter", LogLevel.Information) |> ignore
     // Suppress health check Debug logs in production (they run every 5-30 seconds)
     builder.Logging.AddFilter("Mercator.HealthChecks.ServiceHealthCheck", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("Mercator.HealthChecks.LivenessHealthCheck", LogLevel.Information) |> ignore
     builder.Logging.AddFilter("Microsoft.Extensions.Diagnostics.HealthChecks", LogLevel.Warning) |> ignore
+    if env = "Production" then
+        // NLog writes every event as one JSON line. The host's default console
+        // provider would print each again as plain text; the OpenTelemetry
+        // exporter from ServiceDefaults is kept.
+        builder.Logging.AddFilter<ConsoleLoggerProvider>(fun _ -> false) |> ignore
+        // Library chatter (connection handshakes, ServerInfo dumps, hosting
+        // internals) only when something is wrong; the host's three lifetime
+        // lines (started, environment, content root) stay.
+        builder.Logging.AddFilter("NATS.Client", LogLevel.Warning) |> ignore
+        builder.Logging.AddFilter("Microsoft", LogLevel.Warning) |> ignore
+        builder.Logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information) |> ignore
     builder.Logging.AddNLog(NLogProviderOptions(RemoveLoggerFactoryFilter = false)) |> ignore
 
     // Register services
