@@ -524,8 +524,8 @@ Pre-built images are automatically published to GitHub Container Registry (GHCR)
 # Pull latest version
 docker pull ghcr.io/sebfia/dlqservice:latest
 
-# Pull specific version (current: 0.7.1)
-docker pull ghcr.io/sebfia/dlqservice:0.7.1
+# Pull specific version (current: 0.8.0)
+docker pull ghcr.io/sebfia/dlqservice:0.8.0
 
 # Pull by git commit SHA
 docker pull ghcr.io/sebfia/dlqservice:<git-sha>
