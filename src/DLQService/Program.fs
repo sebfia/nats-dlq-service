@@ -84,7 +84,7 @@ let main args =
     // Ensure environment variables are loaded (they should be by default, but be explicit)
     builder.Configuration.AddEnvironmentVariables() |> ignore
 
-    // 🆕 Add Aspire ServiceDefaults for observability (OpenTelemetry, health checks, service discovery)
+    // ServiceDefaults: health-check infrastructure and the HttpClient factory
     builder.AddServiceDefaults() |> ignore
 
     // Configure logging
@@ -98,8 +98,8 @@ let main args =
         config.AddRuleForAllLevels(devTarget)
         LogManager.Configuration <- config
 
-    // NOTE: Don't clear providers! ServiceDefaults added OpenTelemetry logging for Aspire Dashboard.
-    // Just add NLog alongside it.
+    // NLog is added alongside the host's default providers; Production filters
+    // the console one out below.
     let minLogLevel = if env = "Production" then LogLevel.Information else LogLevel.Debug
     builder.Logging.SetMinimumLevel(minLogLevel) |> ignore
     // Reduce noisy DEBUG shutdown logs from NATS internals (outside Production;
@@ -115,8 +115,7 @@ let main args =
     builder.Logging.AddFilter("Microsoft.Extensions.Diagnostics.HealthChecks", LogLevel.Warning) |> ignore
     if env = "Production" then
         // NLog writes every event as one JSON line. The host's default console
-        // provider would print each again as plain text; the OpenTelemetry
-        // exporter from ServiceDefaults is kept.
+        // provider would print each again as plain text.
         builder.Logging.AddFilter<ConsoleLoggerProvider>(fun _ -> false) |> ignore
         // Library chatter (connection handshakes, ServerInfo dumps, hosting
         // internals) only when something is wrong; the host's three lifetime
