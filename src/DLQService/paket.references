@@ -2,8 +2,4 @@ group DLQService
 FSharp.Core
 NLog
 NLog.Extensions.Logging
-Microsoft.Extensions.Logging
-Microsoft.Extensions.Hosting
 NATS.Net
-Microsoft.Extensions.Configuration.Abstractions
-Microsoft.Extensions.Diagnostics.HealthChecks

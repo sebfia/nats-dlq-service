@@ -23,7 +23,7 @@ module HostApplicationBuilderExtensions =
         member this.AddServiceDefaults() =
             // Configure health checks infrastructure
             // Note: Additional health checks are added in Program.fs
-            // Health check server is already configured via HealthCheckServer.fs
+            // The probe endpoints are served by the toolkit's HealthProbes.fs
             this.Services.AddHealthChecks() |> ignore
             
             // Configure HTTP client factory for service-to-service communication
