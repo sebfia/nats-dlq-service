@@ -3,3 +3,6 @@ FSharp.Core
 NLog
 NLog.Extensions.Logging
 NATS.Net
+OpenTelemetry.Extensions.Hosting
+OpenTelemetry.Exporter.OpenTelemetryProtocol
+OpenTelemetry.Instrumentation.Runtime

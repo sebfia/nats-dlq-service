@@ -20,6 +20,7 @@
     <Compile Include="..\toolkit\HealthProbes.fs" />
     <Compile Include="ServiceDefaults.fs" />
     <Compile Include="Operators.fs" />
+    <Compile Include="Telemetry.fs" />
     <Compile Include="DLQProcessor.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
