@@ -44,6 +44,13 @@ let inline configureNats (sp: IServiceProvider) =
         )
 
         let client = new NatsClient(opts)
+        // The advisory loop drains its subscription into an unbounded channel, so
+        // the pending channel should never fill. If it ever does, the advisory is
+        // gone and its message will be missing from the DLQ: say so loudly.
+        client.Connection.add_MessageDropped(
+            AsyncEventHandler<_>(fun _ args ->
+                logger.LogError("NATS dropped a message on {Subject} ({Pending} pending); if it was an advisory, its message is missing from the DLQ", args.Subject, args.Pending)
+                ValueTask.CompletedTask))
         logger.LogHealthy(healthStore, "NATS", "Connection established")
         client
     with ex ->

@@ -312,12 +312,18 @@ let inline processAdvisoryEvents
         task {
             logger.LogInformation $"Starting to process advisory events for subject: {advisorySubject}"
 
-            let channelOptions = BoundedChannelOptions(1024)
+            // Unbounded on purpose: the producer must never block. Advisories are
+            // core NATS messages; while this loop waits, they queue in the
+            // subscription's pending channel. There they are either dropped
+            // (NatsOpts' default DropNewest) or, with Wait, they block the
+            // connection's socket reader, and with it the JetStream API replies
+            // the workers need to drain this channel. Each queued advisory is a
+            // few hundred bytes, so a burst costs memory, never messages.
+            let channelOptions = UnboundedChannelOptions()
             channelOptions.SingleWriter <- true
             channelOptions.SingleReader <- false
-            channelOptions.FullMode <- BoundedChannelFullMode.Wait
 
-            let channel = Channel.CreateBounded<TerminatedAdvisory>(channelOptions)
+            let channel = Channel.CreateUnbounded<TerminatedAdvisory>(channelOptions)
             let reader = channel.Reader
             let writer = channel.Writer
 
