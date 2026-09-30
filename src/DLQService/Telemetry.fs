@@ -25,6 +25,8 @@ type Outcome =
     | GivenUp
     | Unreadable
     | SkippedOwnStream
+    /// Handling threw (typically the ack or nak on a lost connection); the advisory is redelivered.
+    | Failed
 
 module Outcome =
     let tag =
@@ -36,11 +38,12 @@ module Outcome =
         | GivenUp -> "given_up"
         | Unreadable -> "unreadable"
         | SkippedOwnStream -> "skipped_own_stream"
+        | Failed -> "failed"
 
     /// Outcomes that mean a message is not (yet) in the DLQ because something failed.
     let isFailure =
         function
-        | Retried | GivenUp | Unreadable -> true
+        | Retried | GivenUp | Unreadable | Failed -> true
         | Published | Filtered | NotFound | SkippedOwnStream -> false
 
 /// Which advisory it was, from its subject.
@@ -61,23 +64,29 @@ let private handlingDuration =
         unit = "s",
         description = "Time to handle one advisory, including the DLQ publish")
 
-/// Latest backlog of the advisory consumer, refreshed by the processor.
-let private backlog = ref (0L, 0L)
+/// Latest backlog of the advisory consumer, refreshed by the processor; None while it is
+/// unknown (before the first refresh, or after one failed), so no stale value is exported.
+let private backlog : (int64 * int64) option ref = ref None
 
 /// Advisories not yet delivered (pending) and delivered but not yet acknowledged.
 let private backlogGauge =
     meter.CreateObservableGauge<int64>(
         "dlq.advisories.backlog",
         (fun () ->
-            let pending, ackPending = backlog.Value
-            [ Measurement<int64>(pending, KeyValuePair("dlq.state", box "pending"))
-              Measurement<int64>(ackPending, KeyValuePair("dlq.state", box "ack_pending")) ]
-            :> seq<_>),
+            match Volatile.Read(&backlog.contents) with
+            | Some (pending, ackPending) ->
+                [ Measurement<int64>(pending, KeyValuePair("dlq.state", box "pending"))
+                  Measurement<int64>(ackPending, KeyValuePair("dlq.state", box "ack_pending")) ]
+                :> seq<_>
+            | None -> Seq.empty),
         unit = "{advisory}",
         description = "Advisories waiting in the advisory stream for this consumer")
 
 let recordBacklog (pending: int64) (ackPending: int64) =
-    Interlocked.Exchange(&backlog.contents, (pending, ackPending)) |> ignore
+    Volatile.Write(&backlog.contents, Some (pending, ackPending))
+
+/// Marks the backlog unknown: the gauge reports nothing until the next successful refresh.
+let clearBacklog () = Volatile.Write(&backlog.contents, None)
 
 /// Records the outcome of one advisory on the metrics and on its span.
 let record (activity: Activity) (advisoryKind: string) (sourceStream: string) (outcome: Outcome) (elapsed: TimeSpan) =
