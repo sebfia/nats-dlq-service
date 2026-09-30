@@ -10,14 +10,24 @@ A lightweight .NET background service that centralizes dead-letter queue (DLQ) h
 The DLQService automatically listens for two types of failed messages from services within the configured namespace and environment via NATS JetStream advisory events:
 
 1. **Terminated messages**: Messages that services explicitly terminate by calling `AckTerminateAsync()`
-   - Subscribes to: `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>`
+   - Advisory subject: `$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>`
    - NATS automatically publishes these advisory events when messages are terminated
    - **No action required from services** - the DLQService handles everything automatically
 
 2. **Undeliverable messages**: Messages that exceed the consumer's `MaxDeliver` threshold
-   - Subscribes to: `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`
+   - Advisory subject: `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>`
    - NATS automatically publishes these advisory events when messages exceed max deliveries
    - **No action required from services** - the DLQService handles everything automatically
+
+**Advisories are captured, not just subscribed to**: NATS publishes advisories on core subjects, which a subscriber that is down, restarting or too slow never sees. The service therefore captures both subjects in a JetStream stream, `DLQ_ADVISORIES`, and works through it with a durable pull consumer per namespace and environment, `DLQService_{NAMESPACE}_{ENV}`:
+
+- An advisory is acknowledged only after it has been handled, so a burst, a restart or a rollout delays dead-lettering but loses nothing.
+- A failed advisory (for example, the DLQ publish failed) is retried with a growing delay, and given up with an error after 10 attempts.
+- Advisories for a message or stream that no longer exists are acknowledged with a warning.
+- Replicas of the service share their namespace/environment's consumer instead of each processing every advisory.
+- DLQ publishes carry a `Nats-Msg-Id` (`{stream}:{consumer}:{seq}`), so a redelivered advisory does not create a duplicate DLQ entry within the DLQ stream's duplicate window.
+- The stream is shared by every namespace and environment on the account (NATS rejects two streams with overlapping subjects). It uses `Limits` retention: each consumer tracks its own position, and advisories are kept for `AdvisoryStream:MaxAgeDays` whether or not a consumer exists yet. The service creates it when missing and otherwise uses it as it is.
+- A consume loop that fails (for example, a lost connection) is logged and restarted with a growing delay. If setting up the streams or the consumer fails, the service fails `/alive` so Kubernetes restarts it.
 
 **Message filtering**: The service validates that messages match the configured namespace and environment by checking the **original message subject** (format: `{namespace}.{env}.>`) before processing. This ensures that:
 
@@ -362,6 +372,14 @@ All properties are optional and will use the defaults if not specified:
 
 - **`AllowUpdateStream`** (default: `true`) - **IMPORTANT:** When set to `false`, prevents any updates to the DLQ stream configuration after initial creation. Use this in production to lock down the stream configuration.
 
+#### Advisory Stream Configuration (`AdvisoryStream` section)
+
+Used only when the service creates the stream. An existing `DLQ_ADVISORIES` stream is left as it is, because every namespace and environment on the account shares it.
+
+- **`Name`** (default: `DLQ_ADVISORIES`) - Stream that captures the advisories.
+- **`NumReplicas`** (default: the `DLQStream` value) - Replicas for the advisory stream.
+- **`MaxAgeDays`** (default: `7`) - How long advisories are kept. A consumer that falls further behind than this loses the oldest ones.
+
 **Note**: The Dockerfile automatically copies `appsettings.Production.json` into the container. The service will load it automatically since `DOTNET_ENVIRONMENT=Production` is set in the Docker image.
 
 ## How to run locally
@@ -459,7 +477,10 @@ let consumerConfig = ConsumerConfig(
   - Use NATS CLI: `nats stream info {NAMESPACE}_{ENV}_DLQ`
 - Advisory events are received but no DLQ entries appear:
   - Check that the original message subject matches the namespace/environment pattern (`{namespace}.{env}.>`).
-  - Verify the advisory event JSON contains the expected fields: `stream`, `consumer_seq`, `stream_seq`, `deliveries`.
+  - Verify the advisory event JSON contains the expected fields: `stream`, `stream_seq`, `deliveries` (`consumer_seq` is optional; `max_deliver` advisories do not carry it).
+- Advisories are piling up:
+  - `nats consumer info DLQ_ADVISORIES DLQService_{NAMESPACE}_{ENV}` shows what is pending and being redelivered.
+  - Deleting a consumer replays up to `AdvisoryStream:MaxAgeDays` of advisories when the service recreates it; entries older than the DLQ stream's duplicate window are then dead-lettered again.
 
 ## Build
 
