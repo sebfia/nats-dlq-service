@@ -55,7 +55,8 @@ type TerminatedAdvisory = {
     Stream: string
     Consumer: string
     StreamSeq: uint64
-    ConsumerSeq: uint64
+    /// Absent from `max_deliver` advisories; only `terminated` ones carry it.
+    ConsumerSeq: uint64 option
     Deliveries: int
     Reason: string option
 }
@@ -76,7 +77,10 @@ module TerminatedAdvisory =
             Stream = root.GetProperty("stream").GetString()
             Consumer = root.GetProperty("consumer").GetString()
             StreamSeq = root.GetProperty("stream_seq").GetUInt64()
-            ConsumerSeq = root.GetProperty("consumer_seq").GetUInt64()
+            ConsumerSeq =
+                match root.TryGetProperty("consumer_seq") with
+                | true, value -> Some (value.GetUInt64())
+                | false, _ -> None
             Deliveries = root.GetProperty("deliveries").GetInt32()
             Reason = 
                 match root.TryGetProperty("reason") with
@@ -129,8 +133,11 @@ module TerminatedAdvisory =
                                 let value = line.Substring(colonIdx + 1).Trim()
                                 headers.Add($"X-DLQ-{key}", value))
                     
-                    // Publish to DLQ with the headers we've built
-                    let! ack = js.PublishAsync(dlqSubject, originalMsg.Message.Data, headers = headers, cancellationToken = ct)
+                    // Publish to DLQ with the headers we've built. The message id makes a
+                    // redelivered advisory (handled, but its ack lost) a duplicate the DLQ
+                    // stream drops within its duplicate window, not a second DLQ entry.
+                    let msgId = $"{advisory.Stream}:{advisory.Consumer}:{advisory.StreamSeq}"
+                    let! ack = js.PublishAsync(dlqSubject, originalMsg.Message.Data, headers = headers, opts = NatsJSPubOpts(MsgId = msgId), cancellationToken = ct)
                     
                     // Check if publish was successful
                     return 
@@ -138,7 +145,12 @@ module TerminatedAdvisory =
                             PublishedToDLQ ack
                         else 
                             PublishError ack
-        with ex ->
+        with
+        // The stream or the message is gone (deleted, or aged out before the advisory
+        // was handled): nothing to dead-letter, and retrying cannot change that.
+        | :? NatsJSApiException as ex when ex.Error.Code = 404 ->
+            return MessageNotFound (advisory.Stream, advisory.StreamSeq)
+        | ex ->
             return ProcessingError (sprintf "Failed to handle terminated message: %s" ex.Message)
     }
 
@@ -301,111 +313,172 @@ let inline createOrUpdateDLQStream (js: INatsJSContext) (ns: string) (env: strin
         return Error (sprintf "Failed to create or update DLQ stream: %s" ex.Message)
 }
 
-let inline processAdvisoryEvents 
-    (natsConnection: NatsClient) 
-    (jsCtx: INatsJSContext) 
-    (advisorySubject: string) 
-    (subjectFor': TerminatedAdvisory -> string) 
-    (expectedSubjectPrefix: string) 
+/// Where advisories wait until they are handled. Advisories are published on core
+/// NATS subjects: a subscriber that is down, restarting or too slow never sees them.
+/// A stream captures them instead, and each environment's durable consumer works
+/// through them at its own pace.
+type AdvisoryStreamConfig = {
+    /// One stream per account: advisories are account-wide, and NATS rejects two
+    /// streams whose subjects overlap. Every environment's consumer reads it.
+    Name: string
+    NumReplicas: int
+    Storage: StreamConfigStorage
+    /// Safety cap. Interest retention removes an advisory once every consumer has
+    /// acknowledged it; this bounds what a consumer that never returns can pin.
+    MaxAge: TimeSpan
+}
+
+module AdvisoryStreamConfig =
+    let subjects = [|
+        // Published when a consumer calls AckTerminateAsync
+        "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>"
+        // Published when a message exceeds its consumer's MaxDeliver
+        "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>"
+    |]
+
+    let fromConfiguration (dlq: DLQStreamConfig) (configuration: IConfiguration) : AdvisoryStreamConfig =
+        let getConfigValue key = configuration |> Config.tryGetConfigValue key
+        {
+            Name = getConfigValue "AdvisoryStream:Name" |> Option.defaultValue "DLQ_ADVISORIES"
+            NumReplicas =
+                getConfigValue "AdvisoryStream:NumReplicas"
+                |> Option.bind Config.tryParseInt
+                |> Option.defaultValue dlq.NumReplicas
+            Storage = dlq.Storage
+            MaxAge =
+                getConfigValue "AdvisoryStream:MaxAgeDays"
+                |> Option.bind Config.tryParseFloat
+                |> Option.map TimeSpan.FromDays
+                |> Option.defaultValue (TimeSpan.FromDays 7.0)
+        }
+
+/// Creates the advisory stream when it is missing. An existing one is used as it is:
+/// it is shared by every environment, so no single service owns its settings.
+let inline ensureAdvisoryStream (js: INatsJSContext) (config: AdvisoryStreamConfig) (logger: ILogger) (ct: CancellationToken) = task {
+    try
+        let! existing =
+            task {
+                try
+                    let! stream = js.GetStreamAsync(config.Name, cancellationToken = ct)
+                    return Some stream
+                with
+                | :? NatsJSApiException as ex when ex.Error.Code = 404 -> return None
+            }
+        match existing with
+        | Some stream ->
+            logger.LogInformation("Advisory stream '{Stream}' exists; using it as it is.", config.Name)
+            return Ok stream
+        | None ->
+            let streamConfig = StreamConfig(
+                name = config.Name,
+                subjects = AdvisoryStreamConfig.subjects,
+                Retention = StreamConfigRetention.Interest,
+                Storage = config.Storage,
+                NumReplicas = config.NumReplicas,
+                MaxAge = config.MaxAge,
+                Discard = StreamConfigDiscard.Old)
+            let! stream = js.CreateStreamAsync(streamConfig, ct)
+            logger.LogInformation("Created advisory stream '{Stream}' (replicas {Replicas}, max age {MaxAgeDays} days).", config.Name, config.NumReplicas, config.MaxAge.TotalDays)
+            return Ok stream
+    with ex ->
+        return Error (sprintf "Failed to create advisory stream '%s': %s" config.Name ex.Message)
+}
+
+/// Attempts per advisory before it is given up (and logged as lost).
+let [<Literal>] AdvisoryMaxDeliver = 10
+
+/// Delay before a failed advisory is retried, growing with each attempt.
+let inline retryDelay (deliveries: int64) =
+    TimeSpan.FromSeconds(min 60.0 (2.0 ** float (max 0L (deliveries - 1L))))
+
+/// What to do with an advisory once it has been handled.
+type AdvisoryOutcome =
+    | Done
+    | Retry of reason: string
+
+module AdvisoryOutcome =
+    let ofResult =
+        function
+        | PublishedToDLQ _ | FilteredOut _ | MessageNotFound _ -> Done
+        | PublishError ack -> Retry (sprintf "DLQ publish failed: %O" ack.Error)
+        | ProcessingError err -> Retry err
+
+/// Works through the advisory stream with the environment's durable consumer. Only a
+/// handled advisory is acknowledged; a failed one is retried after a delay, so an
+/// advisory is lost only after AdvisoryMaxDeliver failures, never to a burst, a
+/// restart or a slow worker. Replicas of this service share the consumer.
+let inline consumeAdvisories
+    (jsCtx: INatsJSContext)
+    (advisoryStream: string)
+    (consumerName: string)
+    (dlqStream: string)
+    (subjectFor': TerminatedAdvisory -> string)
+    (expectedSubjectPrefix: string)
     (logger: ILogger)
-    (ct: CancellationToken) = 
+    (ct: CancellationToken) =
         task {
-            logger.LogInformation $"Starting to process advisory events for subject: {advisorySubject}"
+            let consumerConfig =
+                ConsumerConfig(
+                    consumerName,
+                    AckPolicy = ConsumerConfigAckPolicy.Explicit,
+                    DeliverPolicy = ConsumerConfigDeliverPolicy.All,
+                    AckWait = TimeSpan.FromSeconds 30.0,
+                    MaxDeliver = int64 AdvisoryMaxDeliver,
+                    MaxAckPending = 1000L)
+            let! consumer = jsCtx.CreateOrUpdateConsumerAsync(advisoryStream, consumerConfig, ct)
+            logger.LogInformation("Consuming advisories from '{Stream}' with durable consumer '{Consumer}'.", advisoryStream, consumerName)
 
-            // Unbounded on purpose: the producer must never block. Advisories are
-            // core NATS messages; while this loop waits, they queue in the
-            // subscription's pending channel. There they are either dropped
-            // (NatsOpts' default DropNewest) or, with Wait, they block the
-            // connection's socket reader, and with it the JetStream API replies
-            // the workers need to drain this channel. Each queued advisory is a
-            // few hundred bytes, so a burst costs memory, never messages.
-            let channelOptions = UnboundedChannelOptions()
-            channelOptions.SingleWriter <- true
-            channelOptions.SingleReader <- false
+            let handle (workerId: int) (msg: INatsJSMsg<ReadOnlyMemory<byte>>) = task {
+                let deliveries = msg.Metadata |> Option.ofNullable |> Option.map (fun m -> int64 m.NumDelivered) |> Option.defaultValue 1L
+                match (try Ok (TerminatedAdvisory.parse msg.Data) with ex -> Error ex.Message) with
+                | Error err ->
+                    logger.LogError("[Worker {Worker}] Unreadable advisory on {Subject}, skipped: {Error}", workerId, msg.Subject, err)
+                    do! msg.AckAsync(cancellationToken = ct)
+                | Ok advisory when advisory.Stream = dlqStream || advisory.Stream = advisoryStream ->
+                    // A DLQ consumer, or this service's own consumer, gave up on a
+                    // message: dead-lettering it again would loop.
+                    logger.LogWarning("[Worker {Worker}] Skipped advisory about stream '{Stream}' (sequence {Seq}): it is the DLQ's own stream.", workerId, advisory.Stream, advisory.StreamSeq)
+                    do! msg.AckAsync(cancellationToken = ct)
+                | Ok advisory ->
+                    let! result = TerminatedAdvisory.handleMessage jsCtx (subjectFor' advisory) expectedSubjectPrefix advisory ct
+                    match result with
+                    | PublishedToDLQ ack ->
+                        logger.LogInformation $"[Worker {workerId}] ✅ Published message to DLQ from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq} → DLQ sequence {ack.Seq}"
+                    | FilteredOut (msgSubject, expectedPrefix) ->
+                        logger.LogDebug $"[Worker {workerId}] ⏩ Filtered out message from stream '{advisory.Stream}', consumer '{advisory.Consumer}', sequence {advisory.StreamSeq}: subject '{msgSubject}' does not match expected prefix '{expectedPrefix}'"
+                    | MessageNotFound (stream, seq) ->
+                        logger.LogWarning $"[Worker {workerId}] ⚠️ Original message not found in stream '{stream}' at sequence {seq}"
+                    | PublishError _ | ProcessingError _ -> ()
 
-            let channel = Channel.CreateUnbounded<TerminatedAdvisory>(channelOptions)
-            let reader = channel.Reader
-            let writer = channel.Writer
+                    match AdvisoryOutcome.ofResult result with
+                    | Done -> do! msg.AckAsync(cancellationToken = ct)
+                    | Retry reason when deliveries >= int64 AdvisoryMaxDeliver ->
+                        logger.LogError("[Worker {Worker}] ❌ Giving up on stream '{Stream}', consumer '{Consumer}', sequence {Seq} after {Deliveries} attempts; it is not in the DLQ: {Reason}", workerId, advisory.Stream, advisory.Consumer, advisory.StreamSeq, deliveries, reason)
+                        do! msg.AckAsync(cancellationToken = ct)
+                    | Retry reason ->
+                        let delay = retryDelay deliveries
+                        logger.LogWarning("[Worker {Worker}] Attempt {Deliveries} failed for stream '{Stream}', consumer '{Consumer}', sequence {Seq}; retrying in {Delay}: {Reason}", workerId, deliveries, advisory.Stream, advisory.Consumer, advisory.StreamSeq, delay, reason)
+                        do! msg.NakAsync(delay = delay, cancellationToken = ct)
+            }
 
-            let advisorySub = natsConnection.SubscribeAsync(advisorySubject, cancellationToken = ct)
-            logger.LogDebug $"Subscribing to advisory events: {advisorySubject}"
-
-            // Producer: read from NATS subscription and push into the channel
-            let producer : Task =
+            let worker (workerId: int) : Task =
                 task {
-                    let enumerator = advisorySub.GetAsyncEnumerator(ct)
+                    let messages = consumer.ConsumeAsync<ReadOnlyMemory<byte>>(opts = NatsJSConsumeOpts(MaxMsgs = 256), cancellationToken = ct).GetAsyncEnumerator(ct)
                     try
-                        let mutable keepReading = true
-                        while keepReading do
-                            let! hasItem = enumerator.MoveNextAsync()
-                            if hasItem then
-                                let msg : NatsMsg<ReadOnlyMemory<byte>> = enumerator.Current
-                                let advisory = TerminatedAdvisory.parse msg.Data
-                                do! writer.WriteAsync(advisory, ct)
-                            else
-                                keepReading <- false
+                        while! messages.MoveNextAsync() do
+                            try
+                                do! handle workerId messages.Current
+                            with
+                            | :? OperationCanceledException -> raise (OperationCanceledException())
+                            | ex -> logger.LogError(ex, "[Worker {Worker}] Exception while handling advisory {Subject}; it will be redelivered.", workerId, messages.Current.Subject)
                     with
                     | :? OperationCanceledException ->
-                        logger.LogInformation $"Advisory event processing cancelled for subject {advisorySubject}."
-                    | :? Sockets.SocketException ->
-                        logger.LogDebug $"Socket closed while reading advisory events for subject {advisorySubject}."
-                    | :? ObjectDisposedException ->
-                        logger.LogDebug $"Object disposed during shutdown while reading advisory events for subject {advisorySubject}."
-                    | ex ->
-                        logger.LogError(ex, $"Error while reading advisory events for subject {advisorySubject}.")
-                    do! enumerator.DisposeAsync()
-                    writer.TryComplete() |> ignore
+                        logger.LogInformation("Advisory worker {Worker} cancelled.", workerId)
+                    do! messages.DisposeAsync()
                 }
 
-            let workerCount =
-                Environment.ProcessorCount
-                |> max 1
-                |> min 8
-
-            let worker (workerId: int) : System.Threading.Tasks.Task =
-                task {
-                    try
-                        let mutable running = true
-                        while running do
-                            let! hasItem = reader.WaitToReadAsync(ct)
-                            if hasItem then
-                                let mutable draining = true
-                                while draining do
-                                    let mutable item = Unchecked.defaultof<TerminatedAdvisory>
-                                    if reader.TryRead(&item) then
-                                        try
-                                            let subject = subjectFor' item
-                                            let! response =
-                                                TerminatedAdvisory.handleMessage jsCtx subject expectedSubjectPrefix item ct
-                                            match response with
-                                            | PublishedToDLQ ack ->
-                                                logger.LogInformation $"[Worker {workerId}] ✅ Published message to DLQ from stream '{item.Stream}', consumer '{item.Consumer}', sequence {item.StreamSeq} → DLQ sequence {ack.Seq}"
-                                            | FilteredOut (msgSubject, expectedPrefix) ->
-                                                logger.LogDebug $"[Worker {workerId}] ⏩ Filtered out message from stream '{item.Stream}', consumer '{item.Consumer}', sequence {item.StreamSeq}: subject '{msgSubject}' does not match expected prefix '{expectedPrefix}'"
-                                            | MessageNotFound (stream, seq) ->
-                                                logger.LogWarning $"[Worker {workerId}] ⚠️ Original message not found in stream '{stream}' at sequence {seq}"
-                                            | PublishError ack ->
-                                                logger.LogError $"[Worker {workerId}] ❌ Failed to publish to DLQ for stream '{item.Stream}', consumer '{item.Consumer}', sequence {item.StreamSeq}: {ack.Error}"
-                                            | ProcessingError err ->
-                                                logger.LogError $"[Worker {workerId}] ❌ Processing error for stream '{item.Stream}', consumer '{item.Consumer}', sequence {item.StreamSeq}: {err}"
-                                        with
-                                        | :? OperationCanceledException ->
-                                            raise (OperationCanceledException())
-                                        | ex ->
-                                            logger.LogError(ex, $"[Worker {workerId}] Exception while processing advisory message for stream '{item.Stream}', consumer '{item.Consumer}', sequence {item.StreamSeq}")
-                                    else
-                                        draining <- false
-                            else
-                                running <- false
-                    with
-                    | :? OperationCanceledException ->
-                        logger.LogInformation $"Advisory processing worker {workerId} cancelled for subject {advisorySubject}."
-                }
-
-            let workers : System.Threading.Tasks.Task[] = [| for i in 1 .. workerCount -> worker i |]
-            let allTasks : System.Threading.Tasks.Task[] = Array.append [| producer |] workers
-
-            do! Task.WhenAll(allTasks)
+            let workerCount = Environment.ProcessorCount |> max 1 |> min 8
+            do! Task.WhenAll [| for i in 1 .. workerCount -> worker i |]
         }
 
 /// Constructs the DLQ subject for a given terminated advisory
@@ -430,7 +503,6 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                 do! client.ConnectAsync()
                 
                 let jsCtx : INatsJSContext = client.CreateJetStreamContext()
-                let natsConnection : NatsClient = client :?> NatsClient
                 
                 let nsConfigured = configuration |> Config.tryGetConfigValue "Namespace"
                 let ns = nsConfigured |> Option.defaultValue DLQService.Namespace
@@ -476,34 +548,29 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                 
                 logger.LogInformation "✅ DLQ stream created or updated successfully."
                 
-                // Subscribe to NATS advisory events for terminated messages
-                // NATS automatically publishes these when services call AckTerminateAsync
-                let terminatedAdvisorySubject = "$JS.EVENT.ADVISORY.CONSUMER.MSG_TERMINATED.>"
-                // Subscribe to NATS advisory events for max deliveries exceeded
-                // These events are published when a message exceeds MaxDeliver
-                let maxDeliveriesAdvisorySubject = "$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.>"
+                let advisoryConfig = AdvisoryStreamConfig.fromConfiguration dlqStreamConfig configuration
+                let! advisoryStreamResult = ensureAdvisoryStream jsCtx advisoryConfig logger stoppingToken
+                let _ =
+                    advisoryStreamResult |> Result.defaultWith (fun err ->
+                        logger.LogCritical $"Failed to set up the advisory stream: {err}"
+                        failwith "Failed to set up the advisory stream."
+                    )
 
-                
                 let subjectFor' ta = subjectFor ns env ta
-                
+
                 // Build the expected subject prefix once for filtering
                 let expectedSubjectPrefix = $"{ns.ToLowerInvariant()}.{env.ToLowerInvariant()}."
-                
-                // Process terminated message advisory events
-                let processTerminatedAdvisoryEvents : Task = 
-                    processAdvisoryEvents natsConnection jsCtx terminatedAdvisorySubject subjectFor' expectedSubjectPrefix logger stoppingToken :> Task
-                
-                // Process max deliveries advisory events
-                let processMaxDeliveriesAdvisoryEvents : Task = 
-                    processAdvisoryEvents natsConnection jsCtx maxDeliveriesAdvisorySubject subjectFor' expectedSubjectPrefix logger stoppingToken :> Task
-                    
-                
-                // Run all processors concurrently
-                do! Task.WhenAll([| 
-                    processTerminatedAdvisoryEvents
-                    processMaxDeliveriesAdvisoryEvents
-                |])
-                
+
+                do! consumeAdvisories
+                        jsCtx
+                        advisoryConfig.Name
+                        $"DLQService_{env}"
+                        $"{ns.ToUpperInvariant()}_{env}_DLQ"
+                        subjectFor'
+                        expectedSubjectPrefix
+                        logger
+                        stoppingToken
+
                 logger.LogInformation "DLQ Processor exiting gracefully."
                 
             with
