@@ -42,10 +42,16 @@ let inline configureNats (sp: IServiceProvider) =
 
         logger.LogInformation($"🔌 Connecting to NATS at: {natsUrl}")
 
+        // A failed first connect (NATS restarting, the Pod's network not ready yet)
+        // is retried by the client like any later reconnect, instead of stopping
+        // the processor until the liveness probe restarts the Pod. The handshake
+        // gets more than the 2 s default, as a CPU-limited Pod can be slow to start.
         let opts = NatsOpts(
             Url = natsUrl,
             Name = DLQService.Name,
-            LoggerFactory = loggerFactory
+            LoggerFactory = loggerFactory,
+            RetryOnInitialConnect = true,
+            ConnectTimeout = TimeSpan.FromSeconds 10.0
         )
 
         let client = new NatsClient(opts)
@@ -56,7 +62,22 @@ let inline configureNats (sp: IServiceProvider) =
             AsyncEventHandler<_>(fun _ args ->
                 logger.LogError("NATS dropped a message on {Subject} ({Pending} pending)", args.Subject, args.Pending)
                 ValueTask.CompletedTask))
-        logger.LogHealthy(healthStore, "NATS", "Connection established")
+        // Readiness follows the connection; liveness stays up while the client retries.
+        let notConnected (reason: string) =
+            healthStore.RecordResolvableError("NATS", reason)
+            ValueTask.CompletedTask
+        client.Connection.add_ConnectionOpened(
+            AsyncEventHandler<_>(fun _ _ ->
+                logger.LogInformation("Connected to NATS at {Url}.", natsUrl)
+                healthStore.ClearError "NATS"
+                ValueTask.CompletedTask))
+        client.Connection.add_ConnectionDisconnected(
+            AsyncEventHandler<_>(fun _ _ ->
+                logger.LogWarning("Disconnected from NATS at {Url}; reconnecting.", natsUrl)
+                notConnected "Disconnected"))
+        // NATS.Client already logs each failed attempt as a warning.
+        client.Connection.add_ReconnectFailed(AsyncEventHandler<_>(fun _ _ -> notConnected "Unreachable"))
+        healthStore.RecordResolvableError("NATS", "Not connected yet")
         client
     with ex ->
         // Record as resolvable error - NATS might come back

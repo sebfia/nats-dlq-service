@@ -603,7 +603,17 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                 logger.LogInformation "Starting DLQ Processor initialization."
                 
                 let client = sp.GetRequiredService<INatsClient>()
-                do! client.ConnectAsync()
+                // The client retries a failed first connect on its own but logs those
+                // attempts below Warning, so say that it is still waiting.
+                let connecting = client.ConnectAsync().AsTask()
+                let mutable waited = TimeSpan.Zero
+                while not connecting.IsCompleted do
+                    let! _ = Task.WhenAny(connecting, Task.Delay(TimeSpan.FromSeconds 15.0, stoppingToken))
+                    stoppingToken.ThrowIfCancellationRequested()
+                    if not connecting.IsCompleted then
+                        waited <- waited + TimeSpan.FromSeconds 15.0
+                        logger.LogWarning("Not connected to NATS after {Waited}; still retrying.", waited)
+                do! connecting
                 
                 let jsCtx : INatsJSContext = client.CreateJetStreamContext()
                 

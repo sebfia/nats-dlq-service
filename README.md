@@ -27,6 +27,7 @@ The DLQService automatically listens for two types of failed messages from servi
 - Replicas of the service share their namespace/environment's consumer instead of each processing every advisory.
 - DLQ publishes carry a `Nats-Msg-Id` (`{stream}:{consumer}:{seq}`), so a redelivered advisory does not create a duplicate DLQ entry within the DLQ stream's duplicate window.
 - The stream is shared by every namespace and environment on the account (NATS rejects two streams with overlapping subjects). It uses `Limits` retention: each consumer tracks its own position, and advisories are kept for `AdvisoryStream:MaxAgeDays` whether or not a consumer exists yet. The service creates it when missing and otherwise uses it as it is.
+- If NATS is unreachable at startup, the client keeps retrying and the service warns every 15 s until it connects. While it is not connected, `/health` (readiness) fails and `/alive` (liveness) stays up, so Kubernetes waits instead of restarting the Pod.
 - A consume loop that fails (for example, a lost connection) is logged and restarted with a growing delay. If setting up the streams or the consumer fails, the service fails `/alive` so Kubernetes restarts it.
 
 **Message filtering**: The service validates that messages match the configured namespace and environment by checking the **original message subject** (format: `{namespace}.{env}.>`) before processing. This ensures that:
