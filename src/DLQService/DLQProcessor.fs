@@ -14,6 +14,7 @@ open NATS.Client.Core
 open NATS.Net
 open Microsoft.Extensions.Configuration
 open System.Net
+open Mercator.HealthChecks
 
 module Task =
     let bind (f: 'a -> Task<'b>) (t: Task<'a>) : Task<'b> =
@@ -323,8 +324,9 @@ type AdvisoryStreamConfig = {
     Name: string
     NumReplicas: int
     Storage: StreamConfigStorage
-    /// Safety cap. Interest retention removes an advisory once every consumer has
-    /// acknowledged it; this bounds what a consumer that never returns can pin.
+    /// How long advisories are kept. Limits retention: each consumer tracks its own
+    /// position, and nothing is discarded because no consumer exists yet (first
+    /// start) or any more (a deleted or retired consumer).
     MaxAge: TimeSpan
 }
 
@@ -372,7 +374,7 @@ let inline ensureAdvisoryStream (js: INatsJSContext) (config: AdvisoryStreamConf
             let streamConfig = StreamConfig(
                 name = config.Name,
                 subjects = AdvisoryStreamConfig.subjects,
-                Retention = StreamConfigRetention.Interest,
+                Retention = StreamConfigRetention.Limits,
                 Storage = config.Storage,
                 NumReplicas = config.NumReplicas,
                 MaxAge = config.MaxAge,
@@ -461,20 +463,52 @@ let inline consumeAdvisories
                         do! msg.NakAsync(delay = delay, cancellationToken = ct)
             }
 
-            let worker (workerId: int) : Task =
-                task {
-                    let messages = consumer.ConsumeAsync<ReadOnlyMemory<byte>>(opts = NatsJSConsumeOpts(MaxMsgs = 256), cancellationToken = ct).GetAsyncEnumerator(ct)
+            /// One pass over the consumer: returns whether any advisory was handled, and
+            /// the exception that ended it, if any.
+            let consumeOnce (workerId: int) (restart: bool) = task {
+                // A restart re-declares the consumer, so one deleted by hand comes back.
+                let! consumer =
+                    if restart then jsCtx.CreateOrUpdateConsumerAsync(advisoryStream, consumerConfig, ct)
+                    else ValueTask<INatsJSConsumer>(consumer)
+                let messages = consumer.ConsumeAsync<ReadOnlyMemory<byte>>(opts = NatsJSConsumeOpts(MaxMsgs = 256), cancellationToken = ct).GetAsyncEnumerator(ct)
+                let mutable handledAny = false
+                let! failure = task {
                     try
                         while! messages.MoveNextAsync() do
                             try
                                 do! handle workerId messages.Current
+                                handledAny <- true
                             with
                             | :? OperationCanceledException -> raise (OperationCanceledException())
                             | ex -> logger.LogError(ex, "[Worker {Worker}] Exception while handling advisory {Subject}; it will be redelivered.", workerId, messages.Current.Subject)
-                    with
-                    | :? OperationCanceledException ->
-                        logger.LogInformation("Advisory worker {Worker} cancelled.", workerId)
-                    do! messages.DisposeAsync()
+                        return None
+                    with ex -> return Some ex }
+                try do! messages.DisposeAsync() with _ -> ()
+                return handledAny, failure }
+
+            /// Keeps a worker consuming until shutdown. A consume loop that ends or fails
+            /// (a lost connection, a deleted consumer) is logged and restarted with a
+            /// growing delay, so capacity never drains away one silent worker at a time.
+            let worker (workerId: int) : Task =
+                task {
+                    let mutable failures = 0L
+                    while not ct.IsCancellationRequested do
+                        let! handledAny, failure =
+                            task {
+                                try return! consumeOnce workerId (failures > 0L)
+                                with ex -> return false, Some ex }
+                        if handledAny then failures <- 0L
+                        match failure with
+                        | _ when ct.IsCancellationRequested -> ()
+                        | Some (:? OperationCanceledException) -> ()
+                        | outcome ->
+                            failures <- failures + 1L
+                            let delay = retryDelay failures
+                            match outcome with
+                            | Some ex -> logger.LogError(ex, "[Worker {Worker}] Consume loop failed ({Failures} in a row); restarting in {Delay}.", workerId, failures, delay)
+                            | None -> logger.LogWarning("[Worker {Worker}] Consume loop ended; restarting in {Delay}.", workerId, delay)
+                            try do! Task.Delay(delay, ct) with :? OperationCanceledException -> ()
+                    logger.LogInformation("Advisory worker {Worker} stopped.", workerId)
                 }
 
             let workerCount = Environment.ProcessorCount |> max 1 |> min 8
@@ -564,7 +598,7 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                 do! consumeAdvisories
                         jsCtx
                         advisoryConfig.Name
-                        $"DLQService_{env}"
+                        $"DLQService_{ns.ToUpperInvariant()}_{env}"
                         $"{ns.ToUpperInvariant()}_{env}_DLQ"
                         subjectFor'
                         expectedSubjectPrefix
@@ -575,5 +609,9 @@ type DLQProcessor(hostEnvironment: IHostEnvironment, sp: IServiceProvider) =
                 
             with
             | :? OperationCanceledException -> logger.LogInformation "DLQ Processor cancelled."
-            | ex -> logger.LogError(ex, "Error in DLQ Processor.")
+            | ex ->
+                // Nothing is dead-lettered from here on: fail /alive so the Pod is
+                // restarted instead of staying green while idle.
+                let healthStore = sp.GetRequiredService<ServiceHealthStore>()
+                logger.LogNonResolvableError(healthStore, "DLQProcessor", "DLQ Processor stopped", ex)
         }
