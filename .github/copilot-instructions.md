@@ -153,7 +153,7 @@ The `.github/workflows/build.yml` workflow:
 
 ## Testing
 
-Currently, there is no test infrastructure in this repository. When adding tests:
+There is no test project in this repository. `tests/NatsTls.Tests.fsx` tests the NATS client certificate module (`dotnet fsi tests/NatsTls.Tests.fsx`; set `NATS_SERVER_BIN` to also run it against throwaway nats-servers). When adding tests:
 - Use FsUnit or Expecto for F# testing
 - Mock NATS connections for unit tests
 - Consider integration tests with a local NATS server
