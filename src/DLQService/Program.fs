@@ -42,6 +42,14 @@ let inline configureNats (sp: IServiceProvider) =
 
         logger.LogInformation($"🔌 Connecting to NATS at: {natsUrl}")
 
+        // Client certificate (Nats:Tls:*, which the Mercator chart sets as
+        // Nats__Tls__*): the server maps it to the NATS user. Nothing set connects
+        // as before; set but unusable throws here (fail closed, never anonymous)
+        // and the processor stops with the reason, which names the setting.
+        let tls = NatsTls.require NatsTls.Section (fun key -> config.[key] |> Option.ofObj)
+        if NatsTls.presentsCertificate tls then
+            logger.LogInformation("NATS client certificate {CertFile}, TLS mode {Mode}.", tls.CertFile, tls.Mode)
+
         // A failed first connect (NATS restarting, the Pod's network not ready yet)
         // is retried by the client like any later reconnect, instead of stopping
         // the processor until the liveness probe restarts the Pod. The handshake
@@ -49,6 +57,7 @@ let inline configureNats (sp: IServiceProvider) =
         let opts = NatsOpts(
             Url = natsUrl,
             Name = DLQService.Name,
+            TlsOpts = tls,
             LoggerFactory = loggerFactory,
             RetryOnInitialConnect = true,
             ConnectTimeout = TimeSpan.FromSeconds 10.0

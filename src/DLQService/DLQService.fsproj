@@ -21,6 +21,7 @@
     <Compile Include="ServiceDefaults.fs" />
     <Compile Include="Operators.fs" />
     <Compile Include="Telemetry.fs" />
+    <Compile Include="NatsTls.fs" />
     <Compile Include="DLQProcessor.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

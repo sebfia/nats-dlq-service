@@ -127,6 +127,7 @@ Convert JSON paths to environment variables using double underscores (`__`) as s
 - `NatsUrl` → `NatsUrl`
 - `DLQStream:NumReplicas` → `DLQStream__NumReplicas`
 - `DLQStream:MaxAgeDays` → `DLQStream__MaxAgeDays`
+- `Nats:Tls:CertFile` → `Nats__Tls__CertFile`
 
 #### Docker
 
@@ -381,6 +382,17 @@ Used only when the service creates the stream. An existing `DLQ_ADVISORIES` stre
 - **`NumReplicas`** (default: the `DLQStream` value) - Replicas for the advisory stream.
 - **`MaxAgeDays`** (default: `7`) - How long advisories are kept. A consumer that falls further behind than this loses the oldest ones.
 
+#### NATS client certificate (`Nats:Tls` section)
+
+For a NATS server that knows its clients by a TLS client certificate (mTLS, `tls { verify_and_map: true }`): the server maps the certificate's subject (e.g. `CN=dlq-service`) to a NATS user, so the service sends no user, password or token. The Mercator Helm chart mounts the cert-manager certificate read-only and sets the environment variables.
+
+- **`CertFile`** (`Nats__Tls__CertFile`) - The client certificate (PEM, e.g. `tls.crt`).
+- **`KeyFile`** (`Nats__Tls__KeyFile`) - Its private key (PEM, PKCS#8 or SEC1, e.g. `tls.key`).
+- **`CaFile`** (`Nats__Tls__CaFile`) - The CA that signed the NATS **server's** certificate (PEM, e.g. `ca.crt`); the service verifies the server with it.
+- **`Mode`** (`Nats__Tls__Mode`, optional) - `require` (default): TLS with the certificate, never plain. `prefer`: plain while the server offers no TLS, the certificate as soon as it does; for the rollout, before the server is switched.
+
+None of them set: the connection is plain, exactly as before. All three set: the files are checked at startup (they exist, the key belongs to the certificate, the CA file holds a certificate). Anything else fails closed: a partial setting, a missing or empty file, a key that does not match, or an unknown `Mode` stops the service with an error that names the setting and path (never the key's content), and `/alive` fails. A configured certificate never turns into a plain, anonymous connection. The files are read again at each reconnect, so a certificate cert-manager renews in place is used from the next reconnect on.
+
 **Note**: The Dockerfile automatically copies `appsettings.Production.json` into the container. The service will load it automatically since `DOTNET_ENVIRONMENT=Production` is set in the Docker image.
 
 ## How to run locally
@@ -481,6 +493,7 @@ When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, the service exports logs, metrics and
   - **For undeliverable messages**: Verify that consumers have `MaxDeliver` configured and messages are actually exceeding this threshold. NATS will automatically publish advisory events.
   - **Check that message subjects match the DLQService configuration** - messages with subjects that don't start with `{namespace}.{env}.` are logged and skipped.
   - Confirm `NatsUrl` and connectivity to your NATS server.
+  - With a client certificate (`Nats:Tls`), the server log shows why it refused the connection (for example `client didn't provide a certificate`, or an authorization error when no NATS user matches the certificate's subject). `NATS client certificate …, TLS mode …` at startup shows which certificate the service uses.
   - Check logs; in Production they are JSON on stdout.
   - Look for error messages like "Skipping message from subject '...' (does not match namespace pattern '...')" which indicate filtering is working but subjects don't match.
   - Verify that NATS JetStream advisory events are enabled (they are enabled by default).
@@ -506,6 +519,16 @@ dotnet tool restore
 dotnet paket restore
 cd src/DLQService
 dotnet build
+```
+
+## Tests
+
+The repository has no test project. The tests for the NATS client certificate (`src/DLQService/NatsTls.fs`) are an F# script that compiles the module from source and runs them with Expecto:
+
+```bash
+dotnet fsi tests/NatsTls.Tests.fsx
+# with tests against real, throwaway nats-servers (own loopback ports and certificates):
+NATS_SERVER_BIN=/path/to/nats-server dotnet fsi tests/NatsTls.Tests.fsx
 ```
 
 ## Package Management
